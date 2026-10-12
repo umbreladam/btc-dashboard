@@ -1,0 +1,4 @@
+Reference,Date & Time (UTC),Transaction Type,Amount GBP,Fee GBP,Amount BTC,Fee BTC,BTC Price,Cost Basis (GBP),Destination,Description,Transaction Hash
+a1b2c3d4-0001,Oct 01 2026 14:18:05,Purchase,-20.00,0.00,0.00031746,,63000.00,20.00,,Recurring buy EXAMPLE,
+a1b2c3d4-0002,Oct 02 2026 14:18:04,Purchase,-20.00,0.00,0.00031250,,64000.00,20.00,,Recurring buy EXAMPLE,
+a1b2c3d4-0003,Oct 03 2026 17:00:00,Withdrawal,,,-0.00062000,0.00000500,,,bc1qexamplecoldstorage,On-chain withdrawal EXAMPLE,abcdef0123456789

@@ -1,0 +1,293 @@
+import asyncio, os, json
+from datetime import datetime, timezone, date, timedelta
+from zoneinfo import ZoneInfo
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from . import db, importers, portfolio, prices, strike, electrum, example
+
+LDN = ZoneInfo("Europe/London")
+STATIC = os.path.join(os.path.dirname(__file__), "static")
+app = FastAPI(title="Satoshi BTC Dashboard")
+SECRET_KEYS = {"strike_api_key"}
+
+
+@app.on_event("startup")
+async def startup():
+    db.init()
+    with db.conn() as c:
+        if os.environ.get("LOAD_EXAMPLE_DATA", "1") == "1" and not db.get_settings(c).get("example_seeded"):
+            prices.refresh_history(c, date(2021, 1, 1))
+            example.generate(c, {k: v[0] for k, v in prices.history(c).items()})
+            db.set_settings(c, {"example_seeded": True})
+    asyncio.create_task(scheduler())
+
+
+# ---------------- scheduler ----------------
+async def scheduler():
+    last_cold = 0
+    while True:
+        try:
+            now = datetime.now(LDN)
+            with db.conn() as c:
+                s = db.get_settings(c)
+            hh, mm = map(int, str(s["strike_job_time"]).split(":"))
+            if s["strike_api_key"] and now.time() >= now.replace(hour=hh, minute=mm).time() \
+                    and s.get("strike_last_run") != now.date().isoformat():
+                await asyncio.to_thread(run_strike_job)
+            if s.get("prices_day") != now.date().isoformat():
+                with db.conn() as c:
+                    await asyncio.to_thread(prices.refresh_history, c, date(2021, 1, 1))
+                    db.set_settings(c, {"prices_day": now.date().isoformat()})
+            if s["xpub"] and s["electrum_host"] and asyncio.get_event_loop().time() - last_cold > 1800:
+                last_cold = asyncio.get_event_loop().time()
+                try:
+                    await cold_scan()
+                except Exception as e:
+                    with db.conn() as c:
+                        db.log(c, "cold", f"scan failed: {e}")
+        except Exception as e:
+            with db.conn() as c:
+                db.log(c, "scheduler", repr(e))
+        await asyncio.sleep(30)
+
+
+def run_strike_job():
+    with db.conn() as c:
+        s = db.get_settings(c)
+        key = s["strike_api_key"]
+        today = datetime.now(LDN).date().isoformat()
+        try:
+            bal = strike.balance_btc(key)
+            rate = strike.rate_btc_gbp(key)
+        except Exception as e:
+            db.log(c, "strike", f"API error: {e}")
+            db.set_settings(c, {"strike_last_run": today})
+            return {"error": str(e)}
+        txs = strike.daily_record(s["strike_last_balance"], bal, rate, float(s["strike_daily_gbp"]))
+        now = datetime.now(timezone.utc).isoformat()
+        for t in txs:
+            t.update(ts=now, source="strike-api", dedupe=f"strike-api|{today}|{t['kind']}")
+            db.insert_tx(c, t)
+        db.set_settings(c, {"strike_last_balance": bal, "strike_last_run": today,
+                            "strike_balance_cache": {"btc": bal, "at": now}})
+        msg = f"balance {bal:.8f} BTC, rate £{rate:,.0f}, recorded {len(txs)} tx" + \
+              (" (first run: baseline only)" if s["strike_last_balance"] is None else "")
+        db.log(c, "strike", msg)
+        return {"balance": bal, "rate": rate, "recorded": txs, "message": msg}
+
+
+async def cold_scan():
+    with db.conn() as c:
+        s = db.get_settings(c)
+    if not s["xpub"]:
+        raise HTTPException(400, "No xpub configured")
+    if not s["electrum_host"]:
+        raise HTTPException(400, "No Electrum host configured")
+    r = await electrum.scan(s["xpub"], s["electrum_host"], s["electrum_port"], bool(s["electrum_ssl"]),
+                            int(s["gap_limit"]), s["xpub_script"])
+    with db.conn() as c:
+        db.set_settings(c, {"cold_balance_cache": {"btc": r["balance"], "at": datetime.now(timezone.utc).isoformat(),
+                                                   "addresses": len(r["used_addresses"])}})
+        db.log(c, "cold", f"balance {r['balance']:.8f} BTC across {len(r['used_addresses'])} used addresses")
+    return r
+
+
+# ---------------- API ----------------
+@app.get("/api/summary")
+def api_summary():
+    with db.conn() as c:
+        return portfolio.summary(c)
+
+
+@app.get("/api/series")
+def api_series():
+    with db.conn() as c:
+        return portfolio.series(c)
+
+
+@app.get("/api/tx")
+def api_tx(kind: str = "", source: str = "", wallet: str = "", start: str = "", end: str = "", q: str = ""):
+    sql, args = "SELECT * FROM tx WHERE 1=1", []
+    for col, v in (("kind", kind), ("source", source), ("wallet", wallet)):
+        if v:
+            sql += f" AND {col}=?"; args.append(v)
+    if start:
+        sql += " AND ts>=?"; args.append(start)
+    if end:
+        sql += " AND ts<=?"; args.append(end + "T23:59:59")
+    if q:
+        sql += " AND (note LIKE ? OR ext_id LIKE ?)"; args += [f"%{q}%"] * 2
+    with db.conn() as c:
+        return [dict(r) for r in c.execute(sql + " ORDER BY ts DESC, id DESC", args)]
+
+
+class TxIn(BaseModel):
+    ts: str
+    kind: str
+    wallet: str = "other"
+    to_wallet: str | None = None
+    btc: float
+    gbp: float = 0
+    fee_gbp: float = 0
+    fee_btc: float = 0
+    note: str | None = None
+    estimate: int = 0
+
+
+@app.post("/api/tx")
+def api_add(t: TxIn):
+    if t.kind not in ("buy", "sell", "transfer") or t.btc <= 0:
+        raise HTTPException(400, "kind must be buy/sell/transfer and btc > 0")
+    d = t.model_dump()
+    ts = datetime.fromisoformat(d["ts"])
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=LDN)
+    d.update(ts=ts.astimezone(timezone.utc).isoformat(), source="manual",
+             dedupe=f"manual|{datetime.now().timestamp()}")
+    with db.conn() as c:
+        db.insert_tx(c, d)
+    return {"ok": True}
+
+
+@app.delete("/api/tx/{tid}")
+def api_del(tid: int):
+    with db.conn() as c:
+        c.execute("DELETE FROM tx WHERE id=?", (tid,))
+    return {"ok": True}
+
+
+@app.post("/api/import/preview")
+async def api_preview(file: UploadFile = File(...), source: str = Form("auto")):
+    text = (await file.read()).decode("utf-8-sig", errors="replace")
+    src = importers.detect(text) if source == "auto" else source
+    if src not in importers.PARSERS:
+        raise HTTPException(400, "Could not detect export type - choose Coinbase, Kraken or Strike")
+    rows, errs = importers.PARSERS[src](text)
+    with db.conn() as c:
+        for r in rows:
+            r["dedupe"] = db.dedupe_key(r)
+            r["duplicate"] = c.execute("SELECT 1 FROM tx WHERE dedupe=?", (r["dedupe"],)).fetchone() is not None
+            r["warning"] = "WARNING" in (r.get("note") or "")
+    return {"source": src, "rows": rows, "errors": errs,
+            "stats": {"rows": len(rows), "duplicates": sum(r["duplicate"] for r in rows),
+                      "buys": sum(r["kind"] == "buy" for r in rows), "sells": sum(r["kind"] == "sell" for r in rows),
+                      "transfers": sum(r["kind"] == "transfer" for r in rows)}}
+
+
+@app.post("/api/import/commit")
+def api_commit(payload: dict):
+    n = 0
+    with db.conn() as c:
+        for r in payload.get("rows", []):
+            if r.get("duplicate"):
+                continue
+            n += db.insert_tx(c, r)
+    return {"inserted": n}
+
+
+@app.get("/api/settings")
+def api_get_settings():
+    with db.conn() as c:
+        s = db.get_settings(c)
+    for k in SECRET_KEYS:
+        s[k] = ("••••" + s[k][-4:]) if s[k] else ""
+    s["strike_key_set"] = bool(s["strike_api_key"])
+    return s
+
+
+@app.post("/api/settings")
+def api_set_settings(d: dict):
+    allowed = set(db.DEFAULTS) - {"cold_balance_cache", "strike_balance_cache", "strike_last_balance"}
+    upd = {k: v for k, v in d.items() if k in allowed}
+    if str(upd.get("strike_api_key", "")).startswith("••••"):
+        upd.pop("strike_api_key")
+    if upd.get("xpub"):
+        try:
+            electrum.parse_xpub(upd["xpub"], upd.get("xpub_script", "auto"))
+        except Exception as e:
+            raise HTTPException(400, f"Invalid extended public key: {e}")
+    with db.conn() as c:
+        old = db.get_settings(c)
+        if "xpub" in upd and upd["xpub"] != old["xpub"]:
+            db.set_settings(c, {"cold_balance_cache": None})
+        if upd.get("strike_api_key") == "" and old["strike_api_key"]:
+            db.set_settings(c, {"strike_balance_cache": None, "strike_last_balance": None})
+        db.set_settings(c, upd)
+    return {"ok": True}
+
+
+@app.get("/api/xpub/addresses")
+def api_addresses(n: int = 5):
+    with db.conn() as c:
+        s = db.get_settings(c)
+    if not s["xpub"]:
+        return []
+    return [{"path": p, "address": a} for p, a, _ in electrum.derive(s["xpub"], 0, 0, n, s["xpub_script"])]
+
+
+@app.post("/api/cold/scan")
+async def api_cold():
+    try:
+        return await cold_scan()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(502, f"Electrum error: {e}")
+
+
+@app.post("/api/strike/run")
+def api_strike_run():
+    return run_strike_job()
+
+
+@app.post("/api/strike/test")
+def api_strike_test():
+    with db.conn() as c:
+        key = db.get_settings(c)["strike_api_key"]
+    if not key:
+        raise HTTPException(400, "No Strike API key saved")
+    try:
+        return {"balance": strike.balance_btc(key), "rate_gbp": strike.rate_btc_gbp(key)}
+    except Exception as e:
+        raise HTTPException(502, str(e))
+
+
+@app.post("/api/prices/refresh")
+def api_prices():
+    with db.conn() as c:
+        return {"days": prices.refresh_history(c, date(2021, 1, 1))}
+
+
+@app.post("/api/example/load")
+def api_example_load():
+    with db.conn() as c:
+        return {"inserted": example.generate(c, {k: v[0] for k, v in prices.history(c).items()})}
+
+
+@app.delete("/api/example")
+def api_example_delete():
+    with db.conn() as c:
+        n = c.execute("DELETE FROM tx WHERE example=1").rowcount
+        db.set_settings(c, {"example_seeded": True})
+    return {"deleted": n}
+
+
+@app.get("/api/log")
+def api_log():
+    with db.conn() as c:
+        return [dict(r) for r in c.execute("SELECT * FROM joblog ORDER BY id DESC LIMIT 50")]
+
+
+@app.get("/api/health")
+def health():
+    return {"ok": True}
+
+
+app.mount("/static", StaticFiles(directory=STATIC), name="static")
+
+
+@app.get("/")
+def index():
+    return FileResponse(os.path.join(STATIC, "index.html"))

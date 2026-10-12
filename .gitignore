@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+satoshi-btc-dashboard/data/*
+!satoshi-btc-dashboard/data/.gitkeep
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+/data/
+/devdata/
+.venv/
+.env
+.env.*
+*.key
+*.pem

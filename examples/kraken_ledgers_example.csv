@@ -1,0 +1,7 @@
+"txid","refid","time","type","subtype","aclass","asset","wallet","amount","fee","balance"
+"L1AAAA-AAAAA-AAAAAA","DEP1-EXAMPLE","2024-01-02 09:00:00","deposit","","currency","ZGBP","spot / main",500.0000,0.0000,500.0000
+"L2AAAA-AAAAA-AAAAAA","TRD1-EXAMPLE","2024-01-08 08:30:00","trade","","currency","ZGBP","spot / main",-200.0000,0.8000,299.2000
+"L3AAAA-AAAAA-AAAAAA","TRD1-EXAMPLE","2024-01-08 08:30:00","trade","","currency","XXBT","spot / main",0.0055000000,0.0000000000,0.0055000000
+"L4AAAA-AAAAA-AAAAAA","TRD2-EXAMPLE","2024-01-22 08:30:00","trade","","currency","XXBT","spot / main",0.0050000000,0.0000000000,0.0105000000
+"L5AAAA-AAAAA-AAAAAA","TRD2-EXAMPLE","2024-01-22 08:30:00","trade","","currency","ZGBP","spot / main",-200.0000,0.8000,98.4000
+"L6AAAA-AAAAA-AAAAAA","WDR1-EXAMPLE","2024-02-01 12:00:00","withdrawal","","currency","XXBT","spot / main",-0.0104000000,0.0001000000,0.0000000000

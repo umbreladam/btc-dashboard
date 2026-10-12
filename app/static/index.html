@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Satoshi BTC Dashboard</title>
+<link rel="stylesheet" href="static/style.css">
+<link rel="icon" href="static/icon.svg">
+</head><body>
+<header>
+  <div class="brand"><img src="static/icon.svg" alt=""><span>Satoshi <b>Dashboard</b></span></div>
+  <div class="ticker" id="ticker">BTC —</div>
+  <nav>
+    <a href="#dash" class="active">Dashboard</a><a href="#tx">Transactions</a><a href="#import">Import</a><a href="#settings">Settings</a>
+  </nav>
+</header>
+<div id="example-banner" class="banner hidden">⚠ Showing <b>EXAMPLE DATA</b> (<span id="ex-count"></span> rows). Import your real exports, then delete example data in Settings.</div>
+<main>
+<section id="page-dash">
+  <div class="cards">
+    <div class="card big"><div class="lbl">Total BTC held</div><div class="val" id="c-btc">—</div>
+      <div class="split" id="c-split"></div></div>
+    <div class="card"><div class="lbl">Value</div><div class="val" id="c-gbp">—</div><div class="sub" id="c-usd"></div></div>
+    <div class="card"><div class="lbl">Cost basis (S104 pool)</div><div class="val" id="c-basis">—</div><div class="sub" id="c-avg"></div></div>
+    <div class="card"><div class="lbl">Unrealised PnL</div><div class="val" id="c-pnl">—</div><div class="sub" id="c-pnlpct"></div></div>
+    <div class="card"><div class="lbl">Value if sold today, after UK CGT</div><div class="val" id="c-after">—</div><div class="sub" id="c-cgt"></div></div>
+  </div>
+  <div class="panel"><div class="ph"><h3>Portfolio value vs cost basis</h3>
+    <div class="seg" data-chart="range"><button data-r="90">3M</button><button data-r="365">1Y</button><button data-r="0" class="on">All</button></div></div>
+    <div class="chartbox"><canvas id="ch-value"></canvas></div></div>
+  <div class="grid2">
+    <div class="panel"><div class="ph"><h3>BTC stacked over time</h3></div><div class="chartbox"><canvas id="ch-btc"></canvas></div></div>
+    <div class="panel"><div class="ph"><h3>CGT estimate (sell everything today)</h3></div><table class="kv" id="cgt-table"></table></div>
+  </div>
+  <div class="panel"><div class="ph"><h3>Recent buys</h3><a href="#tx">All transactions →</a></div><div class="tablewrap"><table id="recent"></table></div></div>
+</section>
+
+<section id="page-tx" class="hidden">
+  <div class="panel"><div class="ph"><h3>Transactions</h3><button id="btn-add" class="primary">+ Add transaction</button></div>
+    <div class="filters">
+      <select id="f-kind"><option value="">All types</option><option>buy</option><option>sell</option><option>transfer</option></select>
+      <select id="f-source"><option value="">All sources</option><option>strike</option><option>strike-api</option><option>coinbase</option><option>kraken</option><option>manual</option></select>
+      <select id="f-wallet"><option value="">All wallets</option><option>strike</option><option>coinbase</option><option>kraken</option><option>cold</option><option>other</option></select>
+      <input type="date" id="f-start"><input type="date" id="f-end"><input id="f-q" placeholder="Search notes/ID">
+    </div>
+    <div class="sub" id="tx-stats"></div>
+    <div class="tablewrap"><table id="txtable"></table></div></div>
+  <div class="panel hidden" id="addform"><div class="ph"><h3>Add transaction</h3></div>
+    <form id="f-add" class="form">
+      <label>Date & time (UK)<input type="datetime-local" name="ts" required></label>
+      <label>Type<select name="kind"><option>buy</option><option>sell</option><option>transfer</option></select></label>
+      <label>Wallet (from)<select name="wallet"><option>strike</option><option>coinbase</option><option>kraken</option><option>cold</option><option>other</option></select></label>
+      <label>To wallet (transfers)<select name="to_wallet"><option value="">—</option><option>cold</option><option>strike</option><option>other</option></select></label>
+      <label>BTC amount<input name="btc" type="number" step="0.00000001" required></label>
+      <label>GBP (cost incl. fees / net proceeds)<input name="gbp" type="number" step="0.01" value="0"></label>
+      <label>Fee GBP<input name="fee_gbp" type="number" step="0.01" value="0"></label>
+      <label>Network fee BTC (transfers)<input name="fee_btc" type="number" step="0.00000001" value="0"></label>
+      <label class="wide">Note<input name="note"></label>
+      <button class="primary">Save</button>
+    </form></div>
+</section>
+
+<section id="page-import" class="hidden">
+  <div class="panel"><div class="ph"><h3>Import CSV export</h3></div>
+    <p class="sub">Supported: <b>Coinbase</b> transaction history CSV, <b>Kraken</b> ledgers.csv or trades.csv, <b>Strike</b> account statement CSV. Files are processed only on this device. Duplicates are detected and skipped.</p>
+    <form id="f-import" class="form">
+      <label>Source<select name="source"><option value="auto">Auto-detect</option><option value="coinbase">Coinbase</option><option value="kraken">Kraken</option><option value="strike">Strike</option></select></label>
+      <label class="wide">CSV file<input type="file" name="file" accept=".csv,text/csv" required></label>
+      <button class="primary">Preview</button>
+    </form>
+    <div id="preview"></div></div>
+</section>
+
+<section id="page-settings" class="hidden">
+  <form id="f-settings">
+  <div class="grid2">
+    <div class="panel"><div class="ph"><h3>UK tax (CGT)</h3></div><div class="form">
+      <label>Other taxable income this tax year (£)<input name="other_income" type="number" step="1"></label>
+      <label>Personal allowance (£)<input name="personal_allowance" type="number"></label>
+      <label>Basic-rate band (£)<input name="basic_band" type="number"></label>
+      <label>CGT basic rate<input name="basic_rate" type="number" step="0.01"></label>
+      <label>CGT higher rate<input name="higher_rate" type="number" step="0.01"></label>
+      <label>Annual exempt amount (£)<input name="annual_exempt" type="number"></label>
+      <label>Exempt amount already used (£)<input name="exempt_used" type="number"></label>
+      <label>Assumed selling fee (%)<input name="sell_fee_pct" type="number" step="0.01"></label>
+    </div></div>
+    <div class="panel"><div class="ph"><h3>Strike (read-only API key)</h3></div><div class="form">
+      <label class="wide">API key<input name="strike_api_key" type="password" autocomplete="off" placeholder="paste read-only key"></label>
+      <label>Daily DCA amount (£)<input name="strike_daily_gbp" type="number"></label>
+      <label>Daily job time (UK)<input name="strike_job_time" placeholder="15:25"></label>
+      <div class="btns wide"><button type="button" id="btn-strike-test">Test key</button><button type="button" id="btn-strike-run">Run job now</button></div>
+      <p class="sub wide">Key needs only read scopes for balances and rates. The job records the daily balance increase as a buy; if the balance fell, it records an estimated £ buy at the Strike rate plus an estimated transfer to cold storage.</p>
+    </div></div>
+    <div class="panel"><div class="ph"><h3>Cold storage (xpub / ypub / zpub)</h3></div><div class="form">
+      <label class="wide">Extended public key<input name="xpub" autocomplete="off" placeholder="zpub6r..."></label>
+      <label>Script type<select name="xpub_script"><option value="auto">Auto (from prefix)</option><option value="p2wpkh">Native SegWit (bc1q)</option><option value="p2sh-p2wpkh">Nested SegWit (3...)</option><option value="p2pkh">Legacy (1...)</option><option value="p2tr">Taproot (bc1p)</option></select></label>
+      <label>Gap limit<input name="gap_limit" type="number" min="20"></label>
+      <label>Electrum host<input name="electrum_host" placeholder="10.21.21.10"></label>
+      <label>Electrum port<input name="electrum_port" type="number"></label>
+      <label>Use SSL<select name="electrum_ssl"><option value="false">No (TCP)</option><option value="true">Yes</option></select></label>
+      <div class="btns wide"><button type="button" id="btn-scan">Scan now</button><button type="button" id="btn-addr">Show first addresses</button></div>
+      <div class="sub wide" id="scan-out">The xpub is stored only in this app's /data volume and is only ever used with the Electrum server above (your own Electrs).</div>
+    </div></div>
+    <div class="panel"><div class="ph"><h3>Data</h3></div><div class="form">
+      <div class="btns wide"><button type="button" id="btn-prices">Refresh price history</button><button type="button" id="btn-ex-load">Load example data</button><button type="button" id="btn-ex-del" class="danger">Delete example data</button></div>
+      <div class="wide"><h4>Job log</h4><div id="log" class="log"></div></div>
+    </div></div>
+  </div>
+  <div class="savebar"><button class="primary">Save settings</button><span id="save-msg"></span></div>
+  </form>
+</section>
+</main>
+<footer>Self-hosted · Bitcoin only · Not tax advice — check figures with HMRC guidance (CRYPTO22200).</footer>
+<script src="static/vendor/chart.umd.min.js"></script>
+<script src="static/app.js"></script>
+</body></html>

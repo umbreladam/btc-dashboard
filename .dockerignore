@@ -1,0 +1,7 @@
+.git
+tests
+screenshots
+examples
+satoshi-btc-dashboard
+*.pyc
+__pycache__
