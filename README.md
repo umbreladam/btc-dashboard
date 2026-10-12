@@ -29,7 +29,7 @@ examples/       sample CSVs in each exchange format (EXAMPLE data)
 - App source + CI: https://github.com/umbreladam/btc-dashboard
 - Community app store (paste this into Umbrel): https://github.com/umbreladam/umbrel-app-store
 - Image: `ghcr.io/umbreladam/btc-dashboard` (multi-arch linux/amd64 + linux/arm64, built by GitHub Actions)
-- Current release: `ghcr.io/umbreladam/btc-dashboard:1.0.0@sha256:d4a730c250a85dba93cef5ccb1a51f3e72f2a8201516269696e7b5353856115b`
+- Current release: `ghcr.io/umbreladam/btc-dashboard:1.0.0@sha256:b803b5b55d4470c2397154c2eca5c9b8d0958c2573b8e61ac101d893916e617d`
 
 ## Add the community app store to Umbrel
 1. On Umbrel, open **App Store → ⋯ (top right) → Community App Stores**.
