@@ -5,7 +5,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from . import schedule, db, importers, portfolio, prices, strike, electrum, example
+from . import descriptor, schedule, db, importers, portfolio, prices, strike, electrum, example
 
 LDN = ZoneInfo("Europe/London")
 STATIC = os.path.join(os.path.dirname(__file__), "static")
@@ -38,7 +38,7 @@ async def scheduler():
                 with db.conn() as c:
                     await asyncio.to_thread(prices.refresh_history, c, date(2021, 1, 1))
                     db.set_settings(c, {"prices_day": now.date().isoformat()})
-            if s["xpub"] and s["electrum_host"] and asyncio.get_event_loop().time() - last_cold > 1800:
+            if cold_wallets(s) and s["electrum_host"] and asyncio.get_event_loop().time() - last_cold > 1800:
                 last_cold = asyncio.get_event_loop().time()
                 try:
                     await cold_scan()
@@ -87,20 +87,59 @@ def run_strike_job():
         return {"balance": bal, "rate": rate, "recorded": txs, "message": msg}
 
 
+def cold_wallets(s):
+    """Configured cold-storage wallets. A 1.0.0 single xpub shows up as one wallet until edited."""
+    if s.get("cold_wallets"):
+        return s["cold_wallets"]
+    if s.get("xpub"):
+        return [{"id": "legacy", "label": "Cold storage", "spec": s["xpub"], "script": s.get("xpub_script", "auto")}]
+    return []
+
+
+def wallet_info(spec, script="auto"):
+    """Validate an xpub / descriptor / wallet export. Returns (normalised spec, kind, summary)."""
+    if electrum.is_descriptor(spec):
+        d = descriptor.from_input(spec)
+        d.derive(0, 0, 1)
+        return d.canonical(), "descriptor", d.summary()
+    k, stype, net = electrum.parse_xpub(spec, script)
+    return spec.strip(), "xpub", {"type": stype, "policy": "single-sig", "keys": 1}
+
+
+def wallet_addresses(spec, script, n):
+    out = []
+    for chain in (0, 1):
+        out += [{"path": p, "address": a, "chain": "receive" if chain == 0 else "change"}
+                for p, a, _ in electrum.derive(spec, chain, 0, n, script)]
+    return out
+
+
 async def cold_scan():
     with db.conn() as c:
         s = db.get_settings(c)
-    if not s["xpub"]:
-        raise HTTPException(400, "No xpub configured")
+    wallets = cold_wallets(s)
+    if not wallets:
+        raise HTTPException(400, "No cold-storage wallet configured")
     if not s["electrum_host"]:
         raise HTTPException(400, "No Electrum host configured")
-    r = await electrum.scan(s["xpub"], s["electrum_host"], s["electrum_port"], bool(s["electrum_ssl"]),
-                            int(s["gap_limit"]), s["xpub_script"])
+    gap = max(int(s["gap_limit"]), 20)
+    res = {"confirmed": 0.0, "unconfirmed": 0.0, "balance": 0.0, "used_addresses": [], "wallets": []}
+    for w in wallets:
+        r = await electrum.scan(w["spec"], s["electrum_host"], s["electrum_port"], bool(s["electrum_ssl"]),
+                                gap, w.get("script", "auto"))
+        for k in ("confirmed", "unconfirmed", "balance"):
+            res[k] += r[k]
+        res["used_addresses"] += [dict(a, wallet=w["label"]) for a in r["used_addresses"]]
+        res["wallets"].append({"id": w["id"], "label": w["label"], "balance": r["balance"],
+                               "unconfirmed": r["unconfirmed"], "used": len(r["used_addresses"])})
+    for k in ("confirmed", "unconfirmed", "balance"):
+        res[k] = round(res[k], 8)
     with db.conn() as c:
-        db.set_settings(c, {"cold_balance_cache": {"btc": r["balance"], "at": datetime.now(timezone.utc).isoformat(),
-                                                   "addresses": len(r["used_addresses"])}})
-        db.log(c, "cold", f"balance {r['balance']:.8f} BTC across {len(r['used_addresses'])} used addresses")
-    return r
+        db.set_settings(c, {"cold_balance_cache": {"btc": res["balance"], "at": datetime.now(timezone.utc).isoformat(),
+                                                   "addresses": len(res["used_addresses"]), "wallets": res["wallets"]}})
+        db.log(c, "cold", f"balance {res['balance']:.8f} BTC across {len(res['used_addresses'])} used addresses in "
+                          f"{len(wallets)} wallet(s): " + ", ".join(f"{w['label']} {w['balance']:.8f}" for w in res["wallets"]))
+    return res
 
 
 # ---------------- API ----------------
@@ -200,6 +239,7 @@ def api_commit(payload: dict):
 def api_get_settings():
     with db.conn() as c:
         s = db.get_settings(c)
+    s.pop("cold_wallets", None)  # served (abbreviated) by /api/cold/wallets
     for k in SECRET_KEYS:
         s[k] = ("••••" + s[k][-4:]) if s[k] else ""
     s["strike_key_set"] = bool(s["strike_api_key"]) or bool(os.environ.get("STRIKE_API_KEY"))
@@ -215,7 +255,7 @@ def api_get_settings():
 
 @app.post("/api/settings")
 def api_set_settings(d: dict):
-    allowed = set(db.DEFAULTS) - {"cold_balance_cache", "strike_balance_cache", "strike_last_balance"}
+    allowed = set(db.DEFAULTS) - {"cold_wallets", "cold_balance_cache", "strike_balance_cache", "strike_last_balance"}
     upd = {k: v for k, v in d.items() if k in allowed}
     if str(upd.get("strike_api_key", "")).startswith("••••"):
         upd.pop("strike_api_key")
@@ -226,6 +266,8 @@ def api_set_settings(d: dict):
             raise HTTPException(400, "Run time must be HH:MM (UK time)")
     if "strike_frequency" in upd and upd["strike_frequency"] not in schedule.FREQUENCIES:
         raise HTTPException(400, "Frequency must be daily, weekly or monthly")
+    if "gap_limit" in upd:
+        upd["gap_limit"] = max(int(upd["gap_limit"] or 25), 20)
     if upd.get("xpub"):
         try:
             electrum.parse_xpub(upd["xpub"], upd.get("xpub_script", "auto"))
@@ -245,9 +287,83 @@ def api_set_settings(d: dict):
 def api_addresses(n: int = 5):
     with db.conn() as c:
         s = db.get_settings(c)
-    if not s["xpub"]:
+    w = cold_wallets(s)
+    if not w:
         return []
-    return [{"path": p, "address": a} for p, a, _ in electrum.derive(s["xpub"], 0, 0, n, s["xpub_script"])]
+    return [{"path": p, "address": a} for p, a, _ in electrum.derive(w[0]["spec"], 0, 0, n, w[0].get("script", "auto"))]
+
+
+class WalletIn(BaseModel):
+    label: str = ""
+    spec: str
+    script: str = "auto"
+    n: int = 5
+
+
+def _bad(e):
+    return HTTPException(400, f"Invalid xpub / descriptor: {e}")
+
+
+@app.get("/api/cold/wallets")
+def api_wallets():
+    with db.conn() as c:
+        s = db.get_settings(c)
+    out = []
+    for w in cold_wallets(s):
+        try:
+            _, kind, summ = wallet_info(w["spec"], w.get("script", "auto"))
+        except Exception as e:
+            kind, summ = "invalid", {"error": str(e)}
+        sp = w["spec"]
+        out.append({"id": w["id"], "label": w["label"], "kind": kind, "summary": summ,
+                    "preview": sp[:24] + "…" + sp[-12:] if len(sp) > 40 else sp})
+    return out
+
+
+@app.post("/api/cold/preview")
+def api_wallet_preview(w: WalletIn):
+    """First receive + change addresses for an UNSAVED xpub/descriptor, to compare with your wallet."""
+    try:
+        spec, kind, summ = wallet_info(w.spec, w.script)
+        return {"kind": kind, "summary": summ, "descriptor": spec if kind == "descriptor" else None,
+                "addresses": wallet_addresses(spec, w.script, max(1, min(w.n, 50)))}
+    except Exception as e:
+        raise _bad(e)
+
+
+@app.post("/api/cold/wallets")
+def api_wallet_add(w: WalletIn):
+    try:
+        spec, kind, summ = wallet_info(w.spec, w.script)
+    except Exception as e:
+        raise _bad(e)
+    import secrets
+    with db.conn() as c:
+        s = db.get_settings(c)
+        ws = [dict(x) for x in cold_wallets(s)]
+        label = (w.label or "").strip()[:60] or f"Wallet {len(ws) + 1}"
+        ws.append({"id": secrets.token_hex(4), "label": label, "spec": spec, "script": w.script})
+        db.set_settings(c, {"cold_wallets": ws, "xpub": "", "cold_balance_cache": None})
+    return {"ok": True, "kind": kind, "summary": summ}
+
+
+@app.delete("/api/cold/wallets/{wid}")
+def api_wallet_del(wid: str):
+    with db.conn() as c:
+        s = db.get_settings(c)
+        ws = [x for x in cold_wallets(s) if x["id"] != wid]
+        db.set_settings(c, {"cold_wallets": ws, "xpub": "", "cold_balance_cache": None})
+    return {"ok": True}
+
+
+@app.get("/api/cold/wallets/{wid}/addresses")
+def api_wallet_addresses(wid: str, n: int = 5):
+    with db.conn() as c:
+        s = db.get_settings(c)
+    for w in cold_wallets(s):
+        if w["id"] == wid:
+            return wallet_addresses(w["spec"], w.get("script", "auto"), max(1, min(n, 50)))
+    raise HTTPException(404, "Unknown wallet")
 
 
 @app.post("/api/cold/scan")

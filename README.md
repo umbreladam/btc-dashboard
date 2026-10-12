@@ -2,7 +2,7 @@
 
 Self-hosted, **Bitcoin-only** portfolio dashboard for umbrelOS. Dark CoinMarketCap-style UI, UK CGT
 (HMRC share-matching), Coinbase/Kraken/Strike CSV importers, Strike read-only API daily job, and
-cold-storage balance via **your own Electrs**, so the xpub never leaves the Umbrel.
+cold-storage balance (single-sig xpub or **multisig descriptor**, watch-only) via **your own Electrs**, so your keys never leave the Umbrel.
 
 > Ships with clearly labelled **EXAMPLE data** (purple "example" tags plus a yellow banner). Delete it in
 > *Settings → Data → Delete example data* after importing your real records. **Not tax advice.**
@@ -20,8 +20,9 @@ app/                            # FastAPI backend + static frontend (Chart.js ve
   importers.py  Coinbase, Kraken (ledgers.csv & trades.csv), Strike CSV parsers
   strike.py     Strike API (GET /balances, GET /rates/ticker) + daily-job logic
   electrum.py   xpub/ypub/zpub derivation (embit) + Electrum protocol client, gap-limit scan
+  descriptor.py watch-only output descriptors (multisig, BIP-380 checksum, BIP-389 multipath, BIP-67) + wallet-export parsing
   prices.py     spot price (CoinGecko, Kraken fallback) + daily history (Kraken OHLC / CoinGecko), cached in SQLite
-tests/          pytest: matching rules, tax bands, importers, Strike job, BIP84 vector, Electrum scan vs fake server
+tests/          pytest: matching rules, tax bands, importers, Strike job, BIP84 vector, descriptor vectors (Core/BIP-380/67/389), Electrum scan vs fake server
 examples/       sample CSVs in each exchange format (EXAMPLE data)
 ```
 
@@ -39,6 +40,7 @@ examples/       sample CSVs in each exchange format (EXAMPLE data)
 ## How to release an update
 1. Change the code here, bump `version:` (e.g. `1.0.1`) and `releaseNotes` in `satoshi-btc-dashboard/umbrel-app.yml`, commit and push to `main`.
 2. Tag it: `git tag v1.0.1 && git push origin v1.0.1`. CI (`.github/workflows/build.yml`) runs the tests, then builds amd64 + arm64 with buildx/QEMU and pushes `ghcr.io/umbreladam/btc-dashboard:latest` and `:1.0.1` (the version is read from `umbrel-app.yml`).
+   **Avoid digest churn:** a push to `main` and a tag push each start a build, and each rebuild gives `:1.0.1` a new digest. Build exactly once: put `[skip ci]` in the release commit message, push `main` and the tag, then run the workflow once on the tag (`gh workflow run build.yml --ref v1.0.1`). Pin the digest from that run.
 3. Get the multi-arch digest: `docker buildx imagetools inspect ghcr.io/umbreladam/btc-dashboard:1.0.1` (or `crane digest ...`).
 4. In `satoshi-btc-dashboard/docker-compose.yml` set `image: ghcr.io/umbreladam/btc-dashboard:1.0.1@sha256:<digest>`.
 5. Commit/push (README and compose-only changes don't trigger a rebuild, so the pinned digest stays valid). Copy `umbrel-app-store.yml` and `satoshi-btc-dashboard/` into the `umbreladam/umbrel-app-store` repo and push. Umbrel then shows an **Update** button.
@@ -70,11 +72,24 @@ With only those two permissions the key is read-only and **cannot move funds**. 
 - balance down: records an **estimated** buy of the configured amount at Strike's rate plus an **estimated** transfer of the rest to cold storage (both tagged *estimate*).
 When you later import the Strike CSV, delete the overlapping `strike-api` rows (filter by source) so buys aren't counted twice.
 
-### Cold storage xpub
-*Settings → Cold storage*: paste your **xpub / ypub / zpub** (script type auto-detected from the prefix, or choose one, including Taproot).
-Click **Show first addresses** and check they match your wallet, then **Scan now**. Receive and change chains are scanned with a gap limit (default 25, min 20).
+### Cold storage (xpub or multisig descriptor, watch-only)
+*Settings → Cold storage*: add one or more wallets, each with a label (e.g. a 2-of-3 multisig vault plus a single-sig wallet). For each, paste one of:
+- a single-sig **xpub / ypub / zpub** (script type auto-detected from the prefix, or choose one, including Taproot);
+- an **output descriptor** (needed for **multisig**: an xpub alone can't describe a multisig wallet). Supported: `wsh(sortedmulti(...))`, `wsh(multi(...))`, `sh(wsh(sortedmulti/multi(...)))`, `sh(sortedmulti/multi(...))`, plus single-sig `wpkh(...)`, `sh(wpkh(...))`, `pkh(...)`, `tr(KEY)`. Keys may carry origins (`[fingerprint/48h/0h/0h/2h]xpub...`) and be xpub/Ypub/Zpub/tpub/Vpub-style; use `/0/*` (change `/1/*` is then inferred) or multipath `/<0;1>/*` (BIP-389). A trailing `#checksum` is verified (BIP-380); without one the descriptor is still accepted;
+- or a pasted **wallet export**: Sparrow / Specter / Nunchuk (BSMS) / Bitcoin Core JSON or text containing a descriptor, **Caravan** JSON (quorum + extendedPublicKeys), an **Electrum** multisig wallet file (`wallet_type: "2of3"`, `x1/`...), or a **Coldcard**-style config (`Policy: 2 of 3`, `Format: P2WSH`, `Derivation:`, `XFP: xpub` lines). Key lists are assumed to be `sortedmulti` (what all these coordinators use). If an export isn't recognised, paste the descriptor.
+
+Where to find the descriptor:
+- **Sparrow**: open the wallet → *Settings* → *Script Policy* → *Edit…* shows the descriptor (or *Export…* → *Output Descriptor*).
+- **Specter Desktop**: wallet → *Settings* → *Export* (export to wallet software): paste the JSON or its `descriptor`.
+- **Nunchuk**: wallet → ⋯ → *Export wallet configuration* (BSMS/descriptor file): paste its contents.
+- **Caravan**: *Download wallet configuration* (JSON): paste the JSON.
+- **Electrum**: *Wallet → Information* shows the cosigner master public keys; paste the wallet file JSON, or build the descriptor yourself (`wsh(sortedmulti(2,Zpub1/<0;1>/*,Zpub2/<0;1>/*,Zpub3/<0;1>/*))`).
+
+Click **Show first addresses** (works before saving, and per saved wallet; shows receive `0/i` and change `1/i`) and check they match your wallet (e.g. Sparrow's *Addresses* tab), then **Scan now**. Receive and change chains are scanned with a gap limit (default 25, min 20), per wallet; the total and a per-wallet breakdown are shown.
+- **Watch-only.** Descriptors and xpubs contain only public keys: they can't spend. The app never builds, signs or exports transactions or PSBTs, and rejects private keys (xprv) if pasted. But they are **privacy-sensitive**: anyone with them can see all your addresses, balances and history. Treat them like a bank statement.
+- They are stored only in SQLite in `/data` and used only to derive addresses locally. Only script hashes are sent, and only to your Electrum server. They are never sent to any third party. Prices come from public endpoints with no account data.
 - Umbrel default Electrs: `APP_ELECTRS_NODE_IP=10.21.21.10`, `APP_ELECTRS_NODE_PORT=50001` (from getumbrel/umbrel-apps `electrs/exports.sh`), injected automatically as the default host/port. Plain TCP, no SSL.
-- The xpub is stored only in SQLite in `/data` and is only used to derive addresses locally. Only script hashes are sent, and only to your Electrum server. Prices come from public endpoints with no account data.
+- A 1.0.0 single xpub carries over as a wallet called "Cold storage".
 - Once scanned, the live cold balance (and live Strike balance) replace the ledger figures in the "Total BTC held" split. If they differ from your transaction records, a warning shows the gap.
 
 ## Tax method (UK)

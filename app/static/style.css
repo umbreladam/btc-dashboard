@@ -35,3 +35,6 @@ button.primary{background:var(--acc);border-color:var(--acc);color:#111;font-wei
 footer{color:var(--mut);text-align:center;padding:24px;font-size:12px}
 @media(max-width:1000px){.cards{grid-template-columns:1fr 1fr}.card.big{grid-column:1/-1}.grid2{grid-template-columns:1fr}}
 @media(max-width:560px){header{padding:10px 12px;gap:8px}nav{margin-left:0;width:100%;overflow-x:auto}main{padding:12px}.cards{grid-template-columns:1fr}.val{font-size:21px}.form{grid-template-columns:1fr}.chartbox{height:240px}}
+textarea{background:var(--panel2);border:1px solid var(--line);color:var(--txt);padding:8px 10px;border-radius:8px;font:12px ui-monospace,monospace;width:100%;resize:vertical}
+.cw{padding:6px 0;border-bottom:1px solid var(--line);word-break:break-all}.cw button{margin-left:6px}
+code{word-break:break-all}

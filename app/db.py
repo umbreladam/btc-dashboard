@@ -78,7 +78,7 @@ DEFAULTS = {
     "strike_api_key": "", "strike_job_enabled": False, "strike_daily_gbp": 20, "strike_dca_currency": "GBP",
     "strike_frequency": "daily", "strike_weekday": 0, "strike_monthday": 1, "strike_job_time": "15:25",
     "strike_check_delay_min": 10, "strike_last_balance": None,
-    "xpub": "", "xpub_script": "auto", "gap_limit": 25,
+    "xpub": "", "xpub_script": "auto", "gap_limit": 25, "cold_wallets": [],
     "electrum_host": os.environ.get("ELECTRUM_HOST", ""), "electrum_port": int(os.environ.get("ELECTRUM_PORT", "50001") or 50001),
     "electrum_ssl": False, "price_source": "coingecko",
     "cold_balance_cache": None, "strike_balance_cache": None,

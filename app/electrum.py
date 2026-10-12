@@ -1,6 +1,6 @@
 """Cold-storage balance via YOUR OWN Electrum server (Electrs on Umbrel).
 
-The xpub never leaves the box: addresses are derived locally and only script hashes are
+Watch-only. The xpub/descriptor never leaves the box: addresses are derived locally and only script hashes are
 sent to the configured Electrum server (default: the local Umbrel Electrs app).
 """
 import asyncio, json, ssl, hashlib
@@ -32,7 +32,16 @@ def _script(pub, stype):
     return script.p2wpkh(pub)
 
 
+def is_descriptor(x: str) -> bool:
+    from .descriptor import looks_like_descriptor_or_export
+    return looks_like_descriptor_or_export(x)
+
+
 def derive(x: str, chain: int, start: int, n: int, override="auto"):
+    """x is a single xpub/ypub/zpub or an output descriptor (single- or multisig)."""
+    if is_descriptor(x):
+        from .descriptor import from_input
+        return from_input(x).derive(chain, start, n)
     k, stype, net = parse_xpub(x, override)
     out = []
     for i in range(start, start + n):
@@ -86,11 +95,19 @@ async def scan(xpub, host, port, use_ssl=False, gap=25, override="auto"):
     """Gap-limit scan of receive (0) and change (1) chains. Returns balance in BTC + used addresses."""
     total_conf = total_unconf = 0
     used = []
+    if is_descriptor(xpub):
+        from .descriptor import from_input
+        d = from_input(xpub)  # parse once
+        chains, derive_fn = d.chains(), (lambda chain, i, n: d.derive(chain, i, n))
+    else:
+        parse_xpub(xpub, override)
+        chains, derive_fn = (0, 1), (lambda chain, i, n: derive(xpub, chain, i, n, override))
+    gap = max(int(gap), 20)
     async with Client(host, port, use_ssl) as c:
-        for chain in (0, 1):
+        for chain in chains:
             idx, empty = 0, 0
             while empty < gap:
-                addrs = derive(xpub, chain, idx, gap, override)
+                addrs = derive_fn(chain, idx, gap)
                 hist = await c.batch([("blockchain.scripthash.get_history", [a[2]]) for a in addrs])
                 bals = await c.batch([("blockchain.scripthash.get_balance", [a[2]]) for a in addrs])
                 for (path, addr, _), h, b in zip(addrs, hist, bals):

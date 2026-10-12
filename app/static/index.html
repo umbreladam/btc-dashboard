@@ -104,15 +104,30 @@
       <div class="btns wide"><button type="button" id="btn-strike-test">Test key</button><button type="button" id="btn-strike-run">Run job now</button></div>
       <p class="sub wide">On scheduled days only, shortly after the buy time, the job reads your Strike balance. An increase is recorded as a buy of the configured amount. If the balance fell, it records an estimated buy of the configured amount at Strike's rate plus an estimated transfer of the rest to cold storage. Day of month 29–31 runs on the last day in shorter months.</p>
     </div></div>
-    <div class="panel"><div class="ph"><h3>Cold storage (xpub / ypub / zpub)</h3></div><div class="form">
-      <label class="wide">Extended public key<input name="xpub" autocomplete="off" placeholder="zpub6r..."></label>
-      <label>Script type<select name="xpub_script"><option value="auto">Auto (from prefix)</option><option value="p2wpkh">Native SegWit (bc1q)</option><option value="p2sh-p2wpkh">Nested SegWit (3...)</option><option value="p2pkh">Legacy (1...)</option><option value="p2tr">Taproot (bc1p)</option></select></label>
-      <label>Gap limit<input name="gap_limit" type="number" min="20"></label>
+    <div class="panel"><div class="ph"><h3>Cold storage (watch-only: xpub or multisig descriptor)</h3></div><div class="form">
+      <div class="wide" id="cold-wallets">No cold-storage wallets yet.</div>
+      <label>Label<input id="cw-label" autocomplete="off" placeholder="e.g. 2-of-3 vault"></label>
+      <label>Script type (xpub only)<select id="cw-script"><option value="auto">Auto (from prefix)</option><option value="p2wpkh">Native SegWit (bc1q)</option><option value="p2sh-p2wpkh">Nested SegWit (3...)</option><option value="p2pkh">Legacy (1...)</option><option value="p2tr">Taproot (bc1p)</option></select></label>
+      <label class="wide">xpub / ypub / zpub, output descriptor, or wallet export<textarea id="cw-spec" rows="4" autocomplete="off" spellcheck="false" placeholder="zpub6r...  or  wsh(sortedmulti(2,[a1b2c3d4/48h/0h/0h/2h]xpub.../<0;1>/*,...))#checksum"></textarea></label>
+      <div class="btns wide"><button type="button" id="btn-cw-preview">Show first addresses</button><button type="button" id="btn-cw-add">Add wallet</button></div>
+      <details class="sub wide"><summary>Where do I find my descriptor?</summary>
+        <p><b>Multisig needs the descriptor</b> (an xpub alone can't describe a multisig wallet). Accepted: <code>wsh(sortedmulti(...))</code>, <code>wsh(multi(...))</code>, <code>sh(wsh(...))</code>, <code>sh(sortedmulti/multi(...))</code>, plus single-sig <code>wpkh/sh(wpkh)/pkh/tr</code>, with key origins <code>[fingerprint/48h/0h/0h/2h]</code>, xpub/Zpub/Ypub/tpub/Vpub keys, <code>/0/*</code> or <code>/&lt;0;1&gt;/*</code>, and an optional <code>#checksum</code> (verified).</p>
+        <ul>
+          <li><b>Sparrow</b>: open the wallet → <i>Settings</i> → <i>Script Policy</i> → <i>Edit…</i> (or <i>Export…</i> → Output Descriptor). Copy the text.</li>
+          <li><b>Specter</b>: wallet → <i>Settings</i> → <i>Export</i> (Export to wallet software) - paste the JSON or the descriptor.</li>
+          <li><b>Nunchuk</b>: wallet → ⋯ → <i>Export wallet configuration</i> (BSMS / descriptor file) - paste its contents.</li>
+          <li><b>Caravan</b>: <i>Download wallet configuration</i> (JSON) - paste the JSON.</li>
+          <li><b>Electrum</b>: <i>Wallet</i> → <i>Information</i> shows the master public keys; paste the wallet file JSON, or write the descriptor yourself.</li>
+          <li><b>Coldcard</b> multisig config text (<code>Policy: 2 of 3</code>, <code>Format: P2WSH</code>, <code>Derivation:</code>, <code>XFP: xpub</code> lines) also works.</li>
+        </ul>
+        <p>If an export is not recognised, <b>paste the descriptor</b> instead. Always click <i>Show first addresses</i> and check them against your wallet's receive addresses before scanning.</p>
+      </details>
+      <label>Gap limit (min 20)<input name="gap_limit" type="number" min="20"></label>
       <label>Electrum host<input name="electrum_host" placeholder="10.21.21.10"></label>
       <label>Electrum port<input name="electrum_port" type="number"></label>
       <label>Use SSL<select name="electrum_ssl"><option value="false">No (TCP)</option><option value="true">Yes</option></select></label>
-      <div class="btns wide"><button type="button" id="btn-scan">Scan now</button><button type="button" id="btn-addr">Show first addresses</button></div>
-      <div class="sub wide" id="scan-out">The xpub is stored only in this app's /data volume and is only ever used with the Electrum server above (your own Electrs).</div>
+      <div class="btns wide"><button type="button" id="btn-scan">Scan now</button></div>
+      <div class="sub wide" id="scan-out"><b>Watch-only.</b> A descriptor/xpub holds only public keys: it cannot spend, and this app never builds or signs transactions. It is still privacy-sensitive (it reveals all your addresses and balances), so it is stored only in this app's /data volume and is never sent anywhere: addresses are derived locally and only script hashes go to the Electrum server above (your own Electrs).</div>
     </div></div>
     <div class="panel"><div class="ph"><h3>Data</h3></div><div class="form">
       <div class="btns wide"><button type="button" id="btn-prices">Refresh price history</button><button type="button" id="btn-ex-load">Load example data</button><button type="button" id="btn-ex-del" class="danger">Delete example data</button></div>

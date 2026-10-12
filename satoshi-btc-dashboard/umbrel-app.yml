@@ -4,7 +4,7 @@ name: Satoshi BTC Dashboard
 tagline: Private Bitcoin-only portfolio tracker with UK CGT
 icon: https://raw.githubusercontent.com/umbreladam/umbrel-app-store/main/satoshi-btc-dashboard/icon.svg
 category: bitcoin
-version: "1.0.0"
+version: "1.0.1"
 port: 8765
 description: >-
   A self-hosted, Bitcoin-only portfolio dashboard. Track BTC held on Strike, exchanges and
@@ -13,8 +13,8 @@ description: >-
 
 
   Import Coinbase, Kraken and Strike CSV exports, record your daily Strike DCA automatically with
-  a read-only API key, and watch your cold storage balance through your own Electrs server.
-  Your xpub never leaves your Umbrel.
+  a read-only API key, and watch your cold storage balance (single-sig xpub or multisig descriptor, watch-only) through your
+  own Electrs server. Your xpub/descriptor never leaves your Umbrel.
 
 
   Not tax advice.
@@ -26,7 +26,11 @@ repo: https://github.com/umbreladam/btc-dashboard
 support: https://github.com/umbreladam/btc-dashboard/issues
 gallery: []
 releaseNotes: >-
-  Initial release.
+  Multisig cold storage: paste an output descriptor (wsh/sh-wsh/sh sortedmulti or multi, key origins,
+  /<0;1>/* multipath, checksum verified) or a Sparrow, Specter, Nunchuk, Caravan, Electrum or Coldcard
+  export. Track several labelled cold wallets (e.g. multisig + single-sig). "Show first addresses" now
+  shows receive and change addresses before saving so you can compare with your wallet. Still
+  watch-only: no transactions or PSBTs; descriptors stay in /data and only script hashes go to your Electrs.
 dependencies:
   - electrs
 path: ""

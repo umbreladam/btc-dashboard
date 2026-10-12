@@ -127,6 +127,7 @@ async function loadSettings() {
   const s = await api("api/settings"); const f = $("#f-settings");
   for (const el of f.elements) if (el.name && el.name in s) { if (el.type === "checkbox") el.checked = !!s[el.name]; else el.value = s[el.name] ?? ""; }
   const nx = $("#strike-next"); if (nx) nx.textContent = s.strike_job_enabled ? (s.strike_next_run ? `Next balance check: ${ukTime(s.strike_next_run)}` : "") : "Scheduled Strike job is off.";
+  loadWallets();
   const lg = await api("api/log");
   $("#log").innerHTML = lg.map(l => `${ukTime(l.ts)} [${l.job}] ${l.msg}`).join("<br>") || "No jobs run yet.";
 }
@@ -141,8 +142,22 @@ const act = (id, fn) => $(id).onclick = async () => { try { await fn(); } catch 
 act("#btn-strike-test", async () => { const r = await post("api/strike/test"); alert(`Strike OK: balance ${btc(r.balance)} BTC, rate ${gbp(r.rate_gbp)}`); });
 act("#btn-strike-run", async () => { const r = await post("api/strike/run"); alert(r.message || r.error); });
 act("#btn-scan", async () => { $("#scan-out").textContent = "Scanning via Electrum…"; const r = await post("api/cold/scan");
-  $("#scan-out").innerHTML = `<span class="ok">Balance ${btc(r.balance)} BTC</span> (${btc(r.unconfirmed)} unconfirmed) across ${r.used_addresses.length} used addresses`; });
-act("#btn-addr", async () => { const r = await api("api/xpub/addresses?n=5"); $("#scan-out").innerHTML = "Verify these match your wallet:<br>" + r.map(a => `${a.path} ${a.address}`).join("<br>"); });
+  $("#scan-out").innerHTML = `<span class="ok">Balance ${btc(r.balance)} BTC</span> (${btc(r.unconfirmed)} unconfirmed) across ${r.used_addresses.length} used addresses` + (r.wallets || []).map(w => `<br>${esc(w.label)}: ${btc(w.balance)} BTC (${w.used} used addresses)`).join(""); });
+const esc = t => String(t ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const addrList = r => r.map(a => `${a.chain} ${esc(a.path)} <code>${esc(a.address)}</code>`).join("<br>");
+const descSumm = s => [s.policy, s.type, s.network, s.fingerprints && s.fingerprints.length ? "fingerprints " + s.fingerprints.join(", ") : "", s.checksum_verified ? "checksum OK" : "", s.change_chain_inferred ? "change chain /1/* inferred" : ""].filter(Boolean).map(esc).join(" · ");
+async function loadWallets() {
+  const ws = await api("api/cold/wallets"); const el = $("#cold-wallets");
+  el.innerHTML = ws.length ? ws.map(w => `<div class="cw"><b>${esc(w.label)}</b> <span class="sub">${w.kind === "invalid" ? esc(w.summary.error) : descSumm(w.summary)}</span> <code>${esc(w.preview)}</code>
+    <button type="button" data-addr="${esc(w.id)}">Show first addresses</button> <button type="button" class="danger" data-del="${esc(w.id)}">Remove</button></div>`).join("") : "No cold-storage wallets yet.";
+  el.querySelectorAll("[data-addr]").forEach(b => b.onclick = async () => { try { const r = await api(`api/cold/wallets/${b.dataset.addr}/addresses?n=5`); $("#scan-out").innerHTML = "Verify these match your wallet:<br>" + addrList(r); } catch (e) { alert(e.message); } });
+  el.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => { if (!confirm("Remove this cold-storage wallet from the app?")) return; await api(`api/cold/wallets/${b.dataset.del}`, {method: "DELETE"}); loadWallets(); });
+}
+const cwBody = () => ({label: $("#cw-label").value, spec: $("#cw-spec").value, script: $("#cw-script").value, n: 5});
+act("#btn-cw-preview", async () => { const r = await post("api/cold/preview", cwBody());
+  $("#scan-out").innerHTML = `${descSumm(r.summary)}<br>Verify these match your wallet (not saved yet):<br>` + addrList(r.addresses); });
+act("#btn-cw-add", async () => { const r = await post("api/cold/wallets", cwBody()); $("#cw-spec").value = ""; $("#cw-label").value = "";
+  $("#scan-out").innerHTML = `<span class="ok">Added</span> ${descSumm(r.summary)}. Use "Show first addresses" to double-check, then Scan now.`; loadWallets(); });
 act("#btn-prices", async () => { const r = await post("api/prices/refresh"); alert(`Cached ${r.days} daily prices`); });
 act("#btn-ex-load", async () => { const r = await post("api/example/load"); alert(`Inserted ${r.inserted} example rows`); });
 act("#btn-ex-del", async () => { if (!confirm("Delete all EXAMPLE transactions?")) return; const r = await api("api/example", {method: "DELETE"}); alert(`Deleted ${r.deleted}`); });
