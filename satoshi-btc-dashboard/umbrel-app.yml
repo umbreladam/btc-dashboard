@@ -4,7 +4,7 @@ name: Satoshi BTC Dashboard
 tagline: Private Bitcoin-only portfolio tracker with UK CGT
 icon: https://raw.githubusercontent.com/umbreladam/umbrel-app-store/main/satoshi-btc-dashboard/icon.svg
 category: bitcoin
-version: "1.0.2"
+version: "1.0.3"
 port: 8765
 description: >-
   A self-hosted, Bitcoin-only portfolio dashboard. Track BTC held on Strike, exchanges and
@@ -24,18 +24,13 @@ submitter: umbreladam
 submission: https://github.com/umbreladam/umbrel-app-store
 repo: https://github.com/umbreladam/btc-dashboard
 support: https://github.com/umbreladam/btc-dashboard/issues
-gallery: []
+gallery:
+  - https://raw.githubusercontent.com/umbreladam/umbrel-app-store/main/satoshi-btc-dashboard/gallery/1.jpg
+  - https://raw.githubusercontent.com/umbreladam/umbrel-app-store/main/satoshi-btc-dashboard/gallery/2.jpg
+  - https://raw.githubusercontent.com/umbreladam/umbrel-app-store/main/satoshi-btc-dashboard/gallery/3.jpg
+  - https://raw.githubusercontent.com/umbreladam/umbrel-app-store/main/satoshi-btc-dashboard/gallery/4.jpg
 releaseNotes: >-
-  Wallets: every wallet now has a name, optional description and a Multisig / Single-sig label (auto-detected,
-  e.g. 2-of-3, and editable). Rename, describe or relabel wallets without re-entering keys; keys are write-only after
-  saving. New dashboard Wallets panel (Strike, each cold wallet, exchanges: BTC, GBP/USD, % of total, last scanned)
-  and a holdings-by-wallet donut. Existing wallets are migrated automatically.
-
-  Security: the app only accepts requests from Umbrel's app proxy (so other apps on your Umbrel can't bypass
-  the Umbrel login), CSRF protection on all changes, Electrum locked to your Umbrel's Electrs (a custom server
-  needs explicit confirmation; TLS certificates verified, self-signed fingerprint pinning), no key material in
-  any API response, Strike key encrypted at rest, owner-only data files, API docs disabled, and an option to
-  turn off external price lookups. Note: a custom Electrum host set in 1.0.1 is reset to Umbrel's Electrs.
+  New train-tracker icon and App Store screenshots.
 dependencies:
   - electrs
 path: ""
