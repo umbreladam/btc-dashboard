@@ -9,7 +9,7 @@ services:
 
   web:
     # Pin a version tag (and ideally @sha256 digest) so Umbrel updates are explicit.
-    image: ghcr.io/umbreladam/btc-dashboard:1.0.0
+    image: ghcr.io/umbreladam/btc-dashboard:1.0.0@sha256:d4a730c250a85dba93cef5ccb1a51f3e72f2a8201516269696e7b5353856115b
     user: "1000:1000"
     init: true
     restart: on-failure

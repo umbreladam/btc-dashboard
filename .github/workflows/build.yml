@@ -2,6 +2,7 @@ name: test-and-publish
 on:
   push:
     branches: [main]
+    paths-ignore: ["README.md", "satoshi-btc-dashboard/docker-compose.yml", "umbrel-app-store.yml", "screenshots/**"]
     tags: ["v*", "[0-9]*"]
   workflow_dispatch:
 permissions:

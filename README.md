@@ -29,6 +29,7 @@ examples/       sample CSVs in each exchange format (EXAMPLE data)
 - App source + CI: https://github.com/umbreladam/btc-dashboard
 - Community app store (paste this into Umbrel): https://github.com/umbreladam/umbrel-app-store
 - Image: `ghcr.io/umbreladam/btc-dashboard` (multi-arch linux/amd64 + linux/arm64, built by GitHub Actions)
+- Current release: `ghcr.io/umbreladam/btc-dashboard:1.0.0@sha256:d4a730c250a85dba93cef5ccb1a51f3e72f2a8201516269696e7b5353856115b`
 
 ## Add the community app store to Umbrel
 1. On Umbrel, open **App Store → ⋯ (top right) → Community App Stores**.
@@ -40,7 +41,7 @@ examples/       sample CSVs in each exchange format (EXAMPLE data)
 2. Tag it: `git tag v1.0.1 && git push origin v1.0.1`. CI (`.github/workflows/build.yml`) runs the tests, then builds amd64 + arm64 with buildx/QEMU and pushes `ghcr.io/umbreladam/btc-dashboard:latest` and `:1.0.1` (the version is read from `umbrel-app.yml`).
 3. Get the multi-arch digest: `docker buildx imagetools inspect ghcr.io/umbreladam/btc-dashboard:1.0.1` (or `crane digest ...`).
 4. In `satoshi-btc-dashboard/docker-compose.yml` set `image: ghcr.io/umbreladam/btc-dashboard:1.0.1@sha256:<digest>`.
-5. Copy `umbrel-app-store.yml` and `satoshi-btc-dashboard/` into the `umbreladam/umbrel-app-store` repo and push. Umbrel then shows an **Update** button.
+5. Commit/push (README and compose-only changes don't trigger a rebuild, so the pinned digest stays valid). Copy `umbrel-app-store.yml` and `satoshi-btc-dashboard/` into the `umbreladam/umbrel-app-store` repo and push. Umbrel then shows an **Update** button.
 
 ## First-run setup
 - Open the app. You'll see example data. Go to **Import** and upload your exports (Auto-detect works):
