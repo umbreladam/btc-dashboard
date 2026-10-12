@@ -2,6 +2,7 @@
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Satoshi BTC Dashboard</title>
+<script src="static/privacy-init.js"></script>
 <link rel="stylesheet" href="static/style.css">
 <link rel="icon" href="static/icon.svg" type="image/svg+xml">
 <link rel="icon" href="static/favicon.png" sizes="64x64" type="image/png">
@@ -9,6 +10,10 @@
 <header>
   <div class="brand"><img src="static/icon.svg" alt=""><span>Satoshi <b>Dashboard</b></span></div>
   <div class="ticker" id="ticker">BTC —</div>
+  <button id="btn-priv" class="eye" type="button" aria-pressed="false" title="Hide balances (privacy mode)" aria-label="Hide balances">
+    <svg class="eye-on" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>
+    <svg class="eye-off" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 19c-7 0-11-7-11-7a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 7 11 7a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+  </button>
   <nav>
     <a href="#dash" class="active">Dashboard</a><a href="#tx">Transactions</a><a href="#import">Import</a><a href="#settings">Settings</a>
   </nav>
@@ -29,7 +34,7 @@
     <div class="panel"><div class="ph"><h3>Holdings by wallet</h3></div><div class="chartbox donut"><canvas id="ch-donut"></canvas></div></div>
   </div>
   <div class="panel"><div class="ph"><h3>Portfolio value vs cost basis</h3>
-    <div class="seg" data-chart="range"><button data-r="90">3M</button><button data-r="365">1Y</button><button data-r="0" class="on">All</button></div></div>
+    <div class="seg" data-chart="range"><button data-r="1d" class="intra">1D</button><button data-r="1w" class="intra">1W</button><button data-r="30">1M</button><button data-r="90">3M</button><button data-r="365">1Y</button><button data-r="0" class="on">All</button></div></div>
     <div class="chartbox"><canvas id="ch-value"></canvas></div></div>
   <div class="grid2">
     <div class="panel"><div class="ph"><h3>BTC stacked over time</h3></div><div class="chartbox"><canvas id="ch-btc"></canvas></div></div>

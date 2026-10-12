@@ -179,3 +179,36 @@ def series(c):
                     "value": round(btc * (p or 0), 2), "price": p})
         d += timedelta(days=1)
     return out
+
+
+def intraday(c, points):
+    """Portfolio at each intraday point [(epoch_s, gbp_price)]: BTC held and pool cost as of that instant
+    (transactions applied by exact timestamp; the S104 pool is recomputed only when a transaction falls in range)."""
+    from datetime import timezone
+    txs = load(c)
+    out, i, btc, evs, pool = [], 0, 0.0, [], 0.0
+
+    def apply(t):
+        nonlocal btc
+        d = uk_day(t["ts"])
+        if t["kind"] in ("buy", "sell") or (t["kind"] == "transfer" and t["fee_btc"]):
+            evs.append(cgt.Event(d, t["kind"] if t["kind"] != "transfer" else "fee",
+                                 t["btc"] if t["kind"] != "transfer" else t["fee_btc"], t["gbp"]))
+        btc += t["btc"] if t["kind"] == "buy" else -t["btc"] if t["kind"] == "sell" else -(t["fee_btc"] or 0)
+
+    def ets(t):
+        dt = datetime.fromisoformat(t["ts"])
+        return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).timestamp()
+
+    for ts, p in sorted(points):
+        n = len(evs)
+        while i < len(txs) and ets(txs[i]) <= ts:
+            apply(txs[i]); i += 1
+        if len(evs) != n:
+            try:
+                pool = cgt.match(evs).pool_cost
+            except ValueError:
+                pass
+        out.append({"t": ts, "day": datetime.fromtimestamp(ts, LDN).strftime("%Y-%m-%d %H:%M"),
+                    "btc": round(btc, 8), "cost": round(pool, 2), "value": round(btc * p, 2), "price": p})
+    return out

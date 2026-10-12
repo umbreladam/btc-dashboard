@@ -1,7 +1,21 @@
 const $ = s => document.querySelector(s);
-const gbp = (v, d = 0) => (v < 0 ? "-" : "") + "£" + Math.abs(v || 0).toLocaleString("en-GB", {minimumFractionDigits: d, maximumFractionDigits: d});
-const usd = v => "$" + (v || 0).toLocaleString("en-US", {maximumFractionDigits: 0});
-const btc = v => (v || 0).toFixed(8);
+// Privacy mode: every absolute money/BTC figure goes through these formatters, which mask it when enabled.
+// Percentages and the market BTC price (gbpRaw/usdRaw) are not masked. privacy-init.js sets html.priv before render.
+const MASK = "****";
+let PRIV = document.documentElement.classList.contains("priv");
+const gbpRaw = (v, d = 0) => (v < 0 ? "-" : "") + "£" + Math.abs(v || 0).toLocaleString("en-GB", {minimumFractionDigits: d, maximumFractionDigits: d});
+const usdRaw = v => "$" + (v || 0).toLocaleString("en-US", {maximumFractionDigits: 0});
+const gbp = (v, d = 0) => PRIV ? "£" + MASK : gbpRaw(v, d);
+const usd = v => PRIV ? "$" + MASK : usdRaw(v);
+const btc = v => PRIV ? MASK : (v || 0).toFixed(8);
+const btc4 = v => PRIV ? MASK + " ₿" : (+v).toFixed(4) + " ₿";
+const signed = v => PRIV ? "£" + MASK : (v >= 0 ? "+" : "") + gbpRaw(v);
+function setPrivacy(on) {
+  PRIV = !!on; document.documentElement.classList.toggle("priv", PRIV);
+  try { localStorage.setItem("satoshi-privacy", PRIV ? "1" : "0"); } catch (e) {}
+  const b = document.getElementById("btn-priv");
+  if (b) { b.setAttribute("aria-pressed", PRIV); b.title = b.ariaLabel = PRIV ? "Show balances" : "Hide balances (privacy mode)"; }
+}
 // Every write carries JSON + the X-Satoshi-Request header (server-side CSRF check).
 const api = async (url, opt = {}) => {
   if (opt.method && opt.method !== "GET") opt.headers = {"Content-Type": "application/json", "X-Satoshi-Request": "1", ...(opt.headers || {})};
@@ -15,7 +29,7 @@ const post = (url, body, method = "POST") => api(url, {method, body: JSON.string
 const ukTime = ts => new Date(ts).toLocaleString("en-GB", {timeZone: "Europe/London", dateStyle: "medium", timeStyle: "short"});
 Chart.defaults.color = "#8a94a3"; Chart.defaults.borderColor = "#252d38"; Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
 
-let charts = {}, series = [], range = 0;
+let charts = {}, series = [], range = "0", intraOff = null, intra = {};
 
 // ---------- routing ----------
 function route() {
@@ -29,7 +43,7 @@ window.addEventListener("hashchange", route);
 // ---------- dashboard ----------
 async function loadDash() {
   const s = await api("api/summary");
-  $("#ticker").innerHTML = `BTC <b>${gbp(s.price.gbp)}</b> · ${usd(s.price.usd)} <span class="sub">(${s.price.source || "offline"})</span>`;
+  $("#ticker").innerHTML = `BTC <b>${gbpRaw(s.price.gbp)}</b> · ${usdRaw(s.price.usd)} <span class="sub">(${s.price.source || "offline"})</span>`;
   $("#example-banner").classList.toggle("hidden", !s.counts.example); $("#ex-count").textContent = s.counts.example;
   const h = s.holdings;
   $("#c-btc").textContent = btc(h.total) + " ₿";
@@ -42,7 +56,7 @@ async function loadDash() {
   $("#c-gbp").textContent = gbp(s.value.gbp); $("#c-usd").textContent = usd(s.value.usd);
   $("#c-basis").textContent = gbp(s.cost_basis_gbp); $("#c-avg").textContent = "Avg buy price " + gbp(s.avg_price_gbp) + " / BTC";
   const cls = s.pnl_gbp >= 0 ? "up" : "down";
-  $("#c-pnl").textContent = (s.pnl_gbp >= 0 ? "+" : "") + gbp(s.pnl_gbp); $("#c-pnl").className = "val " + cls;
+  $("#c-pnl").textContent = signed(s.pnl_gbp); $("#c-pnl").className = "val " + cls;
   $("#c-pnlpct").innerHTML = `<span class="${cls}">${s.pnl_pct >= 0 ? "▲" : "▼"} ${s.pnl_pct.toFixed(2)}%</span>`;
   const t = s.cgt;
   if (t.error) { $("#c-after").textContent = "—"; $("#c-cgt").textContent = t.error; }
@@ -57,7 +71,10 @@ async function loadDash() {
       `<tr class="total"><td>Value after CGT</td><td>${gbp(t.value_after_tax)}</td></tr>`;
   }
   drawWallets(s);
-  series = await api("api/series"); drawCharts();
+  series = await api("api/series");
+  if (intraOff === null) { try { intraOff = !!(await api("api/settings")).disable_external_prices; } catch (e) { intraOff = false; } }
+  document.querySelectorAll(".seg button.intra").forEach(b => b.classList.toggle("hidden", intraOff));
+  await drawCharts();
   const buys = await api("api/tx?kind=buy");
   $("#recent").innerHTML = txHead() + buys.slice(0, 10).map(txRow).join("");
 }
@@ -82,9 +99,24 @@ function drawWallets(s) {
       tooltip: {callbacks: {label: c => `${c.label}: ${btc(c.parsed)} ₿ (${(c.parsed / s.holdings.total * 100).toFixed(1)}%)`}}}}});
 }
 
-function drawCharts() {
-  const d = range ? series.slice(-range) : series;
-  const labels = d.map(x => x.day);
+// Ranges: "1d"/"1w" use intraday points (exact-timestamp holdings x intraday price); others filter the daily series by date.
+async function rangeData() {
+  if (range === "1d" || range === "1w") {
+    const days = range === "1d" ? 1 : 7;
+    if (!intra[days] || Date.now() - intra[days].at > 120e3) intra[days] = {at: Date.now(), r: await api("api/series/intraday?days=" + days).catch(() => ({available: false}))};
+    const r = intra[days].r;
+    if (r.available && r.points.length) return r.points.map(p => ({...p, label: days === 1 ? p.day.slice(11) : new Date(p.t * 1000).toLocaleString("en-GB", {timeZone: "Europe/London", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"})}));
+    document.querySelectorAll(".seg button.intra").forEach(b => b.classList.add("hidden")); intraOff = true;
+    range = "0"; document.querySelectorAll(".seg button").forEach(x => x.classList.toggle("on", x.dataset.r === "0"));
+  }
+  const n = +range;
+  if (!n) return series.map(x => ({...x, label: x.day}));
+  const cut = new Date(Date.now() - n * 864e5).toISOString().slice(0, 10);
+  return series.filter(x => x.day >= cut).map(x => ({...x, label: x.day}));
+}
+async function drawCharts() {
+  const d = await rangeData();
+  const labels = d.map(x => x.label);
   const opts = (fmt) => ({responsive: true, maintainAspectRatio: false, interaction: {mode: "index", intersect: false},
     plugins: {legend: {labels: {boxWidth: 12}}, tooltip: {callbacks: {label: c => c.dataset.label + ": " + fmt(c.parsed.y)}}},
     scales: {x: {type: "category", ticks: {maxTicksLimit: 8}, grid: {display: false}}, y: {ticks: {callback: v => fmt(v)}}},
@@ -95,10 +127,10 @@ function drawCharts() {
     {label: "Cost basis (GBP)", data: d.map(x => x.cost), borderColor: "#3861fb", borderWidth: 2, stepped: true}]}, options: opts(v => gbp(v))});
   charts.b = new Chart($("#ch-btc"), {type: "line", data: {labels, datasets: [
     {label: "BTC held", data: d.map(x => x.btc), borderColor: "#16c784", backgroundColor: "rgba(22,199,132,.12)", fill: true, borderWidth: 2, stepped: true}]},
-    options: opts(v => (+v).toFixed(4) + " ₿")});
+    options: opts(btc4)});
 }
 document.querySelectorAll(".seg button").forEach(b => b.onclick = () => {
-  document.querySelectorAll(".seg button").forEach(x => x.classList.remove("on")); b.classList.add("on"); range = +b.dataset.r; drawCharts();
+  document.querySelectorAll(".seg button").forEach(x => x.classList.remove("on")); b.classList.add("on"); range = b.dataset.r; drawCharts();
 });
 
 // ---------- transactions ----------
@@ -175,7 +207,7 @@ $("#f-settings").onsubmit = async e => {
   try { await post("api/settings", d); $("#save-msg").innerHTML = '<span class="ok">Saved</span>'; loadSettings(); } catch (err) { $("#save-msg").innerHTML = `<span class="err">${err.message}</span>`; }
 };
 const act = (id, fn) => $(id).onclick = async () => { try { await fn(); } catch (e) { alert(e.message); } loadSettings(); };
-act("#btn-strike-test", async () => { const r = await post("api/strike/test"); alert(`Strike OK: balance ${btc(r.balance)} BTC, rate ${gbp(r.rate_gbp)}`); });
+act("#btn-strike-test", async () => { const r = await post("api/strike/test"); alert(`Strike OK: balance ${btc(r.balance)} BTC, rate ${gbpRaw(r.rate_gbp)}`); });
 act("#btn-strike-run", async () => { const r = await post("api/strike/run"); alert(r.message || r.error); });
 act("#btn-scan", async () => { $("#scan-out").textContent = "Scanning via Electrum…"; const r = await post("api/cold/scan");
   $("#scan-out").innerHTML = `<span class="ok">Balance ${btc(r.balance)} BTC</span> (${btc(r.unconfirmed)} unconfirmed) across ${r.used_addresses.length} used addresses` + (r.wallets || []).map(w => `<br>${esc(w.name)}: ${btc(w.balance)} BTC (${w.used} used addresses)`).join(""); });
@@ -214,3 +246,11 @@ act("#btn-ex-load", async () => { const r = await post("api/example/load"); aler
 act("#btn-ex-del", async () => { if (!confirm("Delete all EXAMPLE transactions?")) return; const r = await api("api/example", {method: "DELETE"}); alert(`Deleted ${r.deleted}`); });
 
 route();
+
+// ---------- privacy toggle ----------
+setPrivacy(PRIV);
+$("#btn-priv").onclick = () => {
+  setPrivacy(!PRIV);
+  const p = (location.hash || "#dash").slice(1);   // re-render figures without reloading (and losing) settings form edits
+  if (p === "settings") loadWallets(); else if (p === "dash" || p === "tx") route();
+};

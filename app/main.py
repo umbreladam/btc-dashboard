@@ -204,6 +204,20 @@ def api_series():
         return portfolio.series(c)
 
 
+@app.get("/api/series/intraday")
+def api_series_intraday(days: int = 1):
+    """1D / 1W ranges. Needs an intraday price feed: unavailable when external price fetches are disabled."""
+    days = 7 if days > 1 else 1
+    with db.conn() as c:
+        if db.get_settings(c).get("disable_external_prices"):
+            return {"available": False, "reason": "External price fetches are disabled", "points": []}
+    pts = prices.intraday(days)
+    if not pts:
+        return {"available": False, "reason": "Intraday prices unavailable", "points": []}
+    with db.conn() as c:
+        return {"available": True, "points": portfolio.intraday(c, pts)}
+
+
 @app.get("/api/tx")
 def api_tx(kind: str = "", source: str = "", wallet: str = "", start: str = "", end: str = "", q: str = ""):
     sql, args = "SELECT * FROM tx WHERE 1=1", []

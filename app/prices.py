@@ -68,3 +68,31 @@ def refresh_history(c, start: date):
 
 def history(c):
     return {r["day"]: (r["gbp"], r["usd"]) for r in c.execute("SELECT * FROM prices ORDER BY day")}
+
+
+_intra = {}
+
+
+def intraday(days: int):
+    """Intraday GBP prices [(epoch_s, price)] for the last `days` (1 or 7): Kraken OHLC (5-min / 1-hour candles),
+    CoinGecko market_chart as fallback. Cached 2 min. Callers must check the 'disable external prices' setting."""
+    key, now = days, time.time()
+    if key in _intra and now - _intra[key][0] < 120:
+        return _intra[key][1]
+    since, pts = now - days * 86400, None
+    try:
+        r = httpx.get("https://api.kraken.com/0/public/OHLC", timeout=20, headers=UA,
+                      params={"pair": "XBTGBP", "interval": 5 if days <= 1 else 60, "since": int(since)})
+        res = r.json()["result"]
+        rows = res[[k for k in res if k != "last"][0]]
+        pts = [(int(c[0]), float(c[4])) for c in rows if int(c[0]) >= since]
+    except Exception:
+        try:
+            r = httpx.get("https://api.coingecko.com/api/v3/coins/bitcoin/market_chart", timeout=20, headers=UA,
+                          params={"vs_currency": "gbp", "days": days})
+            pts = [(int(p[0] / 1000), float(p[1])) for p in r.json()["prices"] if p[0] / 1000 >= since]
+        except Exception:
+            pts = None
+    if pts:
+        _intra[key] = (now, pts)
+    return pts or []
