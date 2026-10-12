@@ -193,11 +193,43 @@ async function loadSettings() {
     : '<span class="err">Electrs not detected. Install the Electrs app on your Umbrel.</span>';
   if (ef && ef.overridden) $("#electrum-adv").open = true;
   if (!f.elements.electrum_port_override.value || f.elements.electrum_port_override.value === "0") f.elements.electrum_port_override.value = 50001;
-  const nx = $("#strike-next"); if (nx) nx.textContent = s.strike_job_enabled ? (s.strike_next_run ? `Next balance check: ${ukTime(s.strike_next_run)}` : "") : "Scheduled Strike job is off.";
+  $("#dca-frequency").value = s.strike_job_enabled ? (s.strike_frequency || "daily") : "off";
+  dcaState = s; applyFreq();
   loadWallets();
   const lg = await api("api/log");
   $("#log").innerHTML = lg.map(l => `${ukTime(l.ts)} [${l.job}] ${l.msg}`).join("<br>") || "No jobs run yet.";
 }
+// ---------- Strike DCA: show only the schedule fields for the chosen frequency ----------
+let dcaState = {};
+const WEEKDAYS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+const ordinal = n => n + ([, "st", "nd", "rd"][(n % 100 >> 3 ^ 1) && n % 10] || "th");
+function dcaStatus(freq, s) {
+  if (freq === "off") return "Scheduled Strike check is off. Choose Daily, Weekly or Monthly to turn it on.";
+  if (!s.strike_key_set) return "Add your Strike API key above (and Save) to turn on the scheduled check.";
+  if (!s.strike_job_enabled || s.strike_frequency !== freq) return "Press Save settings to turn on this schedule.";
+  return s.strike_next_run ? `Next balance check: ${ukTime(s.strike_next_run)}` : "";
+}
+function dcaExplain(freq, f) {
+  if (freq === "off") return "The app won't check Strike automatically. Add your buys with Import (CSV) or Transactions → Add, or press Run job now.";
+  const t = f.strike_job_time.value || "15:25", m = +f.strike_check_delay_min.value || 0;
+  const amt = ({GBP: "£", USD: "$", EUR: "€"}[f.strike_dca_currency.value] || "") + (+f.strike_daily_gbp.value || 0);
+  const when = freq === "daily" ? `Every day at ${t}` : freq === "weekly" ? `Every ${WEEKDAYS[+f.strike_weekday.value] || "Monday"} at ${t}`
+    : `On the ${ordinal(+f.strike_monthday.value || 1)} of each month at ${t}`;
+  return `${when} (UK time, matching your Strike recurring buy), the app reads your Strike balance ${m} minutes later. ` +
+    `An increase is recorded as a ${amt} buy. If the balance fell, it records an estimated ${amt} buy at Strike's rate plus an estimated transfer of the rest to cold storage.` +
+    (freq === "monthly" ? " Days 29–31 run on the last day in shorter months." : "");
+}
+function applyFreq() {
+  const f = $("#f-settings"), freq = $("#dca-frequency").value;
+  document.querySelectorAll("[data-freq]").forEach(el => el.classList.toggle("hidden", !el.dataset.freq.split(" ").includes(freq)));
+  if (freq !== "off") f.elements.strike_frequency.value = freq;
+  f.elements.strike_job_enabled.value = freq === "off" ? "false" : "true";
+  $("#dca-explain").textContent = dcaExplain(freq, f);
+  $("#strike-next").textContent = dcaStatus(freq, dcaState);
+}
+$("#dca-frequency").addEventListener("change", applyFreq);
+["strike_job_time", "strike_check_delay_min", "strike_weekday", "strike_monthday", "strike_daily_gbp", "strike_dca_currency"].forEach(n => $("#f-settings").elements[n].addEventListener("input", applyFreq));
+
 $("#f-settings").onsubmit = async e => {
   e.preventDefault(); const d = Object.fromEntries(new FormData(e.target));
   for (const k of ["other_income", "personal_allowance", "basic_band", "basic_rate", "higher_rate", "annual_exempt", "exempt_used", "sell_fee_pct", "strike_daily_gbp", "strike_weekday", "strike_monthday", "strike_check_delay_min", "gap_limit", "electrum_port_override"]) d[k] = +d[k];
