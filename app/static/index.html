@@ -82,12 +82,27 @@
       <label>Exempt amount already used (£)<input name="exempt_used" type="number"></label>
       <label>Assumed selling fee (%)<input name="sell_fee_pct" type="number" step="0.01"></label>
     </div></div>
-    <div class="panel"><div class="ph"><h3>Strike (read-only API key)</h3></div><div class="form">
+    <div class="panel"><div class="ph"><h3>Strike DCA (optional, read-only API key)</h3></div><div class="form">
+      <p class="sub wide">Optional. Don't use Strike? Leave this off and add your buys with <b>Import</b> (CSV) or <b>Transactions → Add</b>.</p>
+      <label class="wide"><span><input name="strike_job_enabled" type="checkbox" value="true"> Enable scheduled Strike balance check</span></label>
+      <details class="wide" open><summary><b>How to create a read-only Strike API key</b></summary><ol class="sub">
+        <li>Sign in at <a href="https://dashboard.strike.me" target="_blank" rel="noopener">https://dashboard.strike.me</a>.</li>
+        <li>Open the <b>API Keys</b> section and create a new key.</li>
+        <li>Name it, e.g. <i>BTC Dashboard</i>.</li>
+        <li>Tick <b>only</b> <code>partner.balances.read</code> (read account balances) and <code>partner.rates.ticker</code> (exchange rates). Leave every other permission unticked.</li>
+        <li>Copy the key (Strike shows it only once), paste it below and press <b>Save</b>, then <b>Test key</b>.</li>
+      </ol><p class="sub">With only these two permissions the key is <b>read-only and cannot move, send or spend funds</b>. It is stored only in this app's local database on your Umbrel and is sent only to api.strike.me.</p></details>
       <label class="wide">API key<input name="strike_api_key" type="password" autocomplete="off" placeholder="paste read-only key"></label>
-      <label>Daily DCA amount (£)<input name="strike_daily_gbp" type="number"></label>
-      <label>Daily job time (UK)<input name="strike_job_time" placeholder="15:25"></label>
+      <label>DCA amount<input name="strike_daily_gbp" type="number" step="0.01" min="0"></label>
+      <label>Currency<select name="strike_dca_currency"><option>GBP</option><option>USD</option><option>EUR</option></select></label>
+      <label>Frequency<select name="strike_frequency"><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option></select></label>
+      <label>Weekday (weekly)<select name="strike_weekday"><option value="0">Monday</option><option value="1">Tuesday</option><option value="2">Wednesday</option><option value="3">Thursday</option><option value="4">Friday</option><option value="5">Saturday</option><option value="6">Sunday</option></select></label>
+      <label>Day of month (monthly)<input name="strike_monthday" type="number" min="1" max="31" title="Short months use their last day"></label>
+      <label>Buy time (UK, HH:MM)<input name="strike_job_time" placeholder="15:25" pattern="[0-2]?[0-9]:[0-5][0-9]"></label>
+      <label>Check balance this many minutes after<input name="strike_check_delay_min" type="number" min="0" max="180"></label>
+      <p class="sub wide" id="strike-next"></p>
       <div class="btns wide"><button type="button" id="btn-strike-test">Test key</button><button type="button" id="btn-strike-run">Run job now</button></div>
-      <p class="sub wide">Key needs only read scopes for balances and rates. The job records the daily balance increase as a buy; if the balance fell, it records an estimated £ buy at the Strike rate plus an estimated transfer to cold storage.</p>
+      <p class="sub wide">On scheduled days only, shortly after the buy time, the job reads your Strike balance. An increase is recorded as a buy of the configured amount. If the balance fell, it records an estimated buy of the configured amount at Strike's rate plus an estimated transfer of the rest to cold storage. Day of month 29–31 runs on the last day in shorter months.</p>
     </div></div>
     <div class="panel"><div class="ph"><h3>Cold storage (xpub / ypub / zpub)</h3></div><div class="form">
       <label class="wide">Extended public key<input name="xpub" autocomplete="off" placeholder="zpub6r..."></label>

@@ -75,7 +75,9 @@ def insert_tx(c, t: dict) -> bool:
 DEFAULTS = {
     "other_income": 0, "personal_allowance": 12570, "basic_band": 37700, "basic_rate": 0.18,
     "higher_rate": 0.24, "annual_exempt": 3000, "exempt_used": 0, "sell_fee_pct": 0.0,
-    "strike_api_key": "", "strike_daily_gbp": 20, "strike_job_time": "15:25", "strike_last_balance": None,
+    "strike_api_key": "", "strike_job_enabled": False, "strike_daily_gbp": 20, "strike_dca_currency": "GBP",
+    "strike_frequency": "daily", "strike_weekday": 0, "strike_monthday": 1, "strike_job_time": "15:25",
+    "strike_check_delay_min": 10, "strike_last_balance": None,
     "xpub": "", "xpub_script": "auto", "gap_limit": 25,
     "electrum_host": os.environ.get("ELECTRUM_HOST", ""), "electrum_port": int(os.environ.get("ELECTRUM_PORT", "50001") or 50001),
     "electrum_ssl": False, "price_source": "coingecko",

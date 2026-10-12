@@ -2,6 +2,7 @@
 import asyncio, json
 from app.electrum import scan, derive
 
+# Public BIP84 test vector (mnemonic "abandon x11 about"), not a real wallet
 ZPUB = "zpub6rFR7y4Q2AijBEqTUquhVz398htDFrtymD9xYYfG1m4wAcvPhXNfE3EfH1r1ADqtfSdVCToUG868RvUUkgDKf31mGDtKsAYz2oz2AGutZYs"
 
 
@@ -21,8 +22,10 @@ def test_scan_gap_limit():
     async def main(gap):
         srv = await asyncio.start_server(handle, "127.0.0.1", 0)
         port = srv.sockets[0].getsockname()[1]
-        async with srv:
-            return await scan(ZPUB, "127.0.0.1", port, gap=gap)
+        try:
+            return await asyncio.wait_for(scan(ZPUB, "127.0.0.1", port, gap=gap), 30)
+        finally:
+            srv.close()  # don't wait_closed(): py3.12 waits for client connections
 
     # 26 unused addresses between index 3 and 30: missed with gap 20, found with gap 30
     r = asyncio.run(main(20))

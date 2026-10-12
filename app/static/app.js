@@ -125,14 +125,16 @@ $("#f-import").onsubmit = async e => {
 // ---------- settings ----------
 async function loadSettings() {
   const s = await api("api/settings"); const f = $("#f-settings");
-  for (const el of f.elements) if (el.name && el.name in s) el.value = s[el.name] ?? "";
+  for (const el of f.elements) if (el.name && el.name in s) { if (el.type === "checkbox") el.checked = !!s[el.name]; else el.value = s[el.name] ?? ""; }
+  const nx = $("#strike-next"); if (nx) nx.textContent = s.strike_job_enabled ? (s.strike_next_run ? `Next balance check: ${ukTime(s.strike_next_run)}` : "") : "Scheduled Strike job is off.";
   const lg = await api("api/log");
   $("#log").innerHTML = lg.map(l => `${ukTime(l.ts)} [${l.job}] ${l.msg}`).join("<br>") || "No jobs run yet.";
 }
 $("#f-settings").onsubmit = async e => {
   e.preventDefault(); const d = Object.fromEntries(new FormData(e.target));
-  for (const k of ["other_income", "personal_allowance", "basic_band", "basic_rate", "higher_rate", "annual_exempt", "exempt_used", "sell_fee_pct", "strike_daily_gbp", "gap_limit", "electrum_port"]) d[k] = +d[k];
+  for (const k of ["other_income", "personal_allowance", "basic_band", "basic_rate", "higher_rate", "annual_exempt", "exempt_used", "sell_fee_pct", "strike_daily_gbp", "strike_weekday", "strike_monthday", "strike_check_delay_min", "gap_limit", "electrum_port"]) d[k] = +d[k];
   d.electrum_ssl = d.electrum_ssl === "true";
+  d.strike_job_enabled = d.strike_job_enabled === "true";
   try { await post("api/settings", d); $("#save-msg").innerHTML = '<span class="ok">Saved</span>'; loadSettings(); } catch (err) { $("#save-msg").innerHTML = `<span class="err">${err.message}</span>`; }
 };
 const act = (id, fn) => $(id).onclick = async () => { try { await fn(); } catch (e) { alert(e.message); } loadSettings(); };

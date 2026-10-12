@@ -12,12 +12,13 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - run: pip install -r requirements.txt pytest
-      - run: python -m pytest -q
+      - run: pip install -r requirements.txt pytest pytest-timeout
+      - run: python -m pytest -q -p no:cacheprovider --timeout 120
   build:
     needs: test
     runs-on: ubuntu-latest

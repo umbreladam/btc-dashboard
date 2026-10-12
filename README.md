@@ -25,22 +25,22 @@ tests/          pytest: matching rules, tax bands, importers, Strike job, BIP84 
 examples/       sample CSVs in each exchange format (EXAMPLE data)
 ```
 
-## Build and push the image
-You need a container registry. These steps use GitHub Container Registry; replace `YOUR_GITHUB_USER`.
-```bash
-echo $GHCR_TOKEN | docker login ghcr.io -u YOUR_GITHUB_USER --password-stdin   # PAT with write:packages
-docker buildx create --use   # once
-docker buildx build --platform linux/amd64,linux/arm64 \
-  -t ghcr.io/YOUR_GITHUB_USER/satoshi-btc-dashboard:1.0.0 --push .
-```
-Make the package **public** in GitHub (Packages → settings) so Umbrel can pull it without credentials.
-Then put the tag (best with digest: `...:1.0.0@sha256:...`, shown by `docker buildx imagetools inspect`) in
-`satoshi-btc-dashboard/docker-compose.yml`, and replace the `YOUR_*` placeholders in `umbrel-app.yml`.
+## Links
+- App source + CI: https://github.com/umbreladam/btc-dashboard
+- Community app store (paste this into Umbrel): https://github.com/umbreladam/umbrel-app-store
+- Image: `ghcr.io/umbreladam/btc-dashboard` (multi-arch linux/amd64 + linux/arm64, built by GitHub Actions)
 
 ## Add the community app store to Umbrel
-1. Push this folder to a **public** GitHub repo (e.g. `YOUR_GITHUB_USER/umbrel-satoshi-store`). `umbrel-app-store.yml` must be at the repo root.
-2. On Umbrel, open **App Store → ⋯ (top right) → Community App Stores**, paste the repo URL and click **Add**.
+1. On Umbrel, open **App Store → ⋯ (top right) → Community App Stores**.
+2. Paste `https://github.com/umbreladam/umbrel-app-store` and click **Add**.
 3. Open the "Satoshi App Store" and install **Satoshi BTC Dashboard**. Umbrel will ask you to install **Electrs** first (declared dependency; Electrs needs Bitcoin Core).
+
+## How to release an update
+1. Change the code here, bump `version:` (e.g. `1.0.1`) and `releaseNotes` in `satoshi-btc-dashboard/umbrel-app.yml`, commit and push to `main`.
+2. Tag it: `git tag v1.0.1 && git push origin v1.0.1`. CI (`.github/workflows/build.yml`) runs the tests, then builds amd64 + arm64 with buildx/QEMU and pushes `ghcr.io/umbreladam/btc-dashboard:latest` and `:1.0.1` (the version is read from `umbrel-app.yml`).
+3. Get the multi-arch digest: `docker buildx imagetools inspect ghcr.io/umbreladam/btc-dashboard:1.0.1` (or `crane digest ...`).
+4. In `satoshi-btc-dashboard/docker-compose.yml` set `image: ghcr.io/umbreladam/btc-dashboard:1.0.1@sha256:<digest>`.
+5. Copy `umbrel-app-store.yml` and `satoshi-btc-dashboard/` into the `umbreladam/umbrel-app-store` repo and push. Umbrel then shows an **Update** button.
 
 ## First-run setup
 - Open the app. You'll see example data. Go to **Import** and upload your exports (Auto-detect works):
@@ -51,13 +51,22 @@ Then put the tag (best with digest: `...:1.0.0@sha256:...`, shown by `docker bui
 - Withdrawals/sends are imported as **transfers to cold storage** (not disposals). Check them in the Transactions page.
 - **Settings → Data → Delete example data.**
 
-### Strike API key
-*Settings → Strike*: paste a **read-only** key (create it at dashboard.strike.me → API keys; scopes for balances + rates only).
-"Test key" calls `GET https://api.strike.me/v1/balances` and `/rates/ticker` with `Authorization: Bearer <key>`.
-A scheduler runs daily at **15:25 Europe/London** (configurable):
+### Strike DCA (optional)
+You don't need Strike: with the scheduled job off (the default) you can use the app purely with CSV import and manual entries.
+
+**Create a read-only Strike API key:**
+1. Sign in at https://dashboard.strike.me.
+2. Open the **API Keys** section and create a new key.
+3. Name it, e.g. `BTC Dashboard`.
+4. Tick **only** `partner.balances.read` (read account balances) and `partner.rates.ticker` (exchange rates). Leave all other permissions unticked.
+5. Copy the key (Strike shows it only once), paste it in *Settings → Strike DCA*, press **Save**, then **Test key** (calls `GET https://api.strike.me/v1/balances` and `/rates/ticker`).
+
+With only those two permissions the key is read-only and **cannot move funds**. It is stored only in the app's local SQLite database in `${APP_DATA_DIR}/data` on your Umbrel and is sent only to api.strike.me. It is never part of the image or compose file. (An optional `STRIKE_API_KEY` environment variable overrides it at runtime for development; don't put it in the compose file.)
+
+**Schedule (all in Settings):** enable/disable, amount and currency (GBP/USD/EUR; non-GBP amounts are converted to GBP with Strike's rates), frequency **daily**, **weekly** (pick the weekday) or **monthly** (pick the day; 29-31 fall back to the last day of shorter months), buy time (UK) and how many minutes after it to check the balance (default 10). On scheduled days only:
 - first run stores a baseline balance;
-- balance up → records the increase as a £20 buy (amount configurable);
-- balance down → records an **estimated** buy of £20 ÷ Strike BTC/GBP rate plus an **estimated** transfer of the rest to cold storage (both tagged *estimate*).
+- balance up: records the increase as a buy of the configured amount;
+- balance down: records an **estimated** buy of the configured amount at Strike's rate plus an **estimated** transfer of the rest to cold storage (both tagged *estimate*).
 When you later import the Strike CSV, delete the overlapping `strike-api` rows (filter by source) so buys aren't counted twice.
 
 ### Cold storage xpub

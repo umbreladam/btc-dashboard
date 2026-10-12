@@ -17,13 +17,17 @@ def balance_btc(key) -> float:
     return 0.0
 
 
-def rate_btc_gbp(key) -> float:
+def rate_btc(key, currency="GBP") -> float:
     r = httpx.get(f"{BASE}/rates/ticker", headers=_h(key), timeout=20)
     r.raise_for_status()
     for t in r.json():
-        if t.get("sourceCurrency") == "BTC" and t.get("targetCurrency") == "GBP":
+        if t.get("sourceCurrency") == "BTC" and t.get("targetCurrency") == currency:
             return float(t["amount"])
-    raise RuntimeError("BTC/GBP rate not in Strike ticker")
+    raise RuntimeError(f"BTC/{currency} rate not in Strike ticker")
+
+
+def rate_btc_gbp(key) -> float:
+    return rate_btc(key, "GBP")
 
 
 def daily_record(prev: float | None, new: float, rate: float, dca_gbp: float):
@@ -33,7 +37,7 @@ def daily_record(prev: float | None, new: float, rate: float, dca_gbp: float):
     delta = round(new - prev, 8)
     if delta > 0:
         return [dict(kind="buy", wallet="strike", btc=delta, gbp=dca_gbp, estimate=0,
-                     note=f"Strike daily buy (balance +{delta:.8f})")]
+                     note=f"Strike DCA buy (balance +{delta:.8f})")]
     if delta == 0:
         return []
     est = round(dca_gbp / rate, 8)

@@ -5,7 +5,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
-from . import db, importers, portfolio, prices, strike, electrum, example
+from . import schedule, db, importers, portfolio, prices, strike, electrum, example
 
 LDN = ZoneInfo("Europe/London")
 STATIC = os.path.join(os.path.dirname(__file__), "static")
@@ -32,9 +32,7 @@ async def scheduler():
             now = datetime.now(LDN)
             with db.conn() as c:
                 s = db.get_settings(c)
-            hh, mm = map(int, str(s["strike_job_time"]).split(":"))
-            if s["strike_api_key"] and now.time() >= now.replace(hour=hh, minute=mm).time() \
-                    and s.get("strike_last_run") != now.date().isoformat():
+            if strike_key(s) and schedule.should_run(now, s):
                 await asyncio.to_thread(run_strike_job)
             if s.get("prices_day") != now.date().isoformat():
                 with db.conn() as c:
@@ -53,19 +51,30 @@ async def scheduler():
         await asyncio.sleep(30)
 
 
+def strike_key(s) -> str:
+    """Key comes from the user's Settings entry; env STRIKE_API_KEY is an optional runtime override."""
+    return s.get("strike_api_key") or os.environ.get("STRIKE_API_KEY", "")
+
+
 def run_strike_job():
     with db.conn() as c:
         s = db.get_settings(c)
-        key = s["strike_api_key"]
+        key = strike_key(s)
+        if not key:
+            return {"error": "No Strike API key saved"}
         today = datetime.now(LDN).date().isoformat()
         try:
             bal = strike.balance_btc(key)
             rate = strike.rate_btc_gbp(key)
+            cur = str(s.get("strike_dca_currency") or "GBP").upper()
+            amount = float(s["strike_daily_gbp"])
+            # Amount in GBP for the ledger: convert via Strike's BTC/<cur> rate if needed
+            amount_gbp = amount if cur == "GBP" else round(amount / strike.rate_btc(key, cur) * rate, 2)
         except Exception as e:
             db.log(c, "strike", f"API error: {e}")
             db.set_settings(c, {"strike_last_run": today})
             return {"error": str(e)}
-        txs = strike.daily_record(s["strike_last_balance"], bal, rate, float(s["strike_daily_gbp"]))
+        txs = strike.daily_record(s["strike_last_balance"], bal, rate, amount_gbp)
         now = datetime.now(timezone.utc).isoformat()
         for t in txs:
             t.update(ts=now, source="strike-api", dedupe=f"strike-api|{today}|{t['kind']}")
@@ -193,7 +202,14 @@ def api_get_settings():
         s = db.get_settings(c)
     for k in SECRET_KEYS:
         s[k] = ("••••" + s[k][-4:]) if s[k] else ""
-    s["strike_key_set"] = bool(s["strike_api_key"])
+    s["strike_key_set"] = bool(s["strike_api_key"]) or bool(os.environ.get("STRIKE_API_KEY"))
+    try:
+        s["strike_next_run"] = schedule.next_check(datetime.now(LDN), s["strike_frequency"], s["strike_job_time"],
+                                                   s["strike_weekday"], s["strike_monthday"],
+                                                   s["strike_check_delay_min"], s.get("strike_last_run")).isoformat() \
+            if s["strike_job_enabled"] else None
+    except Exception:
+        s["strike_next_run"] = None
     return s
 
 
@@ -203,6 +219,13 @@ def api_set_settings(d: dict):
     upd = {k: v for k, v in d.items() if k in allowed}
     if str(upd.get("strike_api_key", "")).startswith("••••"):
         upd.pop("strike_api_key")
+    if "strike_job_time" in upd:
+        try:
+            schedule.parse_time(upd["strike_job_time"])
+        except Exception:
+            raise HTTPException(400, "Run time must be HH:MM (UK time)")
+    if "strike_frequency" in upd and upd["strike_frequency"] not in schedule.FREQUENCIES:
+        raise HTTPException(400, "Frequency must be daily, weekly or monthly")
     if upd.get("xpub"):
         try:
             electrum.parse_xpub(upd["xpub"], upd.get("xpub_script", "auto"))
@@ -245,7 +268,7 @@ def api_strike_run():
 @app.post("/api/strike/test")
 def api_strike_test():
     with db.conn() as c:
-        key = db.get_settings(c)["strike_api_key"]
+        key = strike_key(db.get_settings(c))
     if not key:
         raise HTTPException(400, "No Strike API key saved")
     try:
