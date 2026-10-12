@@ -19,7 +19,8 @@ services:
     environment:
       DATA_DIR: /data
       TZ: Europe/London
-      # Exported by Umbrel's electrs app (electrs/exports.sh): 10.21.21.10:50001
-      ELECTRUM_HOST: $APP_ELECTRS_NODE_IP
-      ELECTRUM_PORT: $APP_ELECTRS_NODE_PORT
+      # Exported by Umbrel's electrs app (electrs/exports.sh). The app is locked to this server unless the user
+      # sets an explicit, confirmed override in Settings.
+      APP_ELECTRS_NODE_IP: $APP_ELECTRS_NODE_IP
+      APP_ELECTRS_NODE_PORT: $APP_ELECTRS_NODE_PORT
       LOAD_EXAMPLE_DATA: "1"

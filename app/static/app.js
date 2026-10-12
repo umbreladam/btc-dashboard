@@ -2,13 +2,16 @@ const $ = s => document.querySelector(s);
 const gbp = (v, d = 0) => (v < 0 ? "-" : "") + "£" + Math.abs(v || 0).toLocaleString("en-GB", {minimumFractionDigits: d, maximumFractionDigits: d});
 const usd = v => "$" + (v || 0).toLocaleString("en-US", {maximumFractionDigits: 0});
 const btc = v => (v || 0).toFixed(8);
+// Every write carries JSON + the X-Satoshi-Request header (server-side CSRF check).
 const api = async (url, opt = {}) => {
-  const r = await fetch(url, opt);
+  if (opt.method && opt.method !== "GET") opt.headers = {"Content-Type": "application/json", "X-Satoshi-Request": "1", ...(opt.headers || {})};
+  if (opt.method && opt.method !== "GET" && opt.body === undefined) opt.body = "{}";
+  const r = await fetch(url, {credentials: "same-origin", ...opt});
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(j.detail || r.statusText);
   return j;
 };
-const post = (url, body) => api(url, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body || {})});
+const post = (url, body, method = "POST") => api(url, {method, body: JSON.stringify(body || {})});
 const ukTime = ts => new Date(ts).toLocaleString("en-GB", {timeZone: "Europe/London", dateStyle: "medium", timeStyle: "short"});
 Chart.defaults.color = "#8a94a3"; Chart.defaults.borderColor = "#252d38"; Chart.defaults.font.family = getComputedStyle(document.body).fontFamily;
 
@@ -53,9 +56,30 @@ async function loadDash() {
       ["CGT due", gbp(t.tax)]].map(([a, b], i, arr) => `<tr class="${i === arr.length - 1 ? "total" : ""}"><td>${a}</td><td>${b}</td></tr>`).join("") +
       `<tr class="total"><td>Value after CGT</td><td>${gbp(t.value_after_tax)}</td></tr>`;
   }
+  drawWallets(s);
   series = await api("api/series"); drawCharts();
   const buys = await api("api/tx?kind=buy");
   $("#recent").innerHTML = txHead() + buys.slice(0, 10).map(txRow).join("");
+}
+
+const WCOL = {Multisig: ["#3861fb", "#7c5cff", "#2fb5ff", "#5a7dff"], "Single-sig": ["#16c784", "#0fa3a3", "#6be0a8"], Exchange: ["#f7931a", "#ffb547", "#e2711d"], Other: ["#8a94a3"], Cold: ["#5f6b7a"]};
+function drawWallets(s) {
+  const rows = s.wallets || [], used = {};
+  const col = r => { const p = WCOL[r.type] || WCOL.Other; used[r.type] = (used[r.type] || 0) + 1; return p[(used[r.type] - 1) % p.length]; };
+  rows.forEach(r => r.color = col(r));
+  const ago = ts => ts ? ukTime(ts) : null;
+  $("#wallets-panel").innerHTML = rows.map(r => `<div class="wrow">
+    <div class="wn"><span class="dot" style="background:${r.color}"></span>${esc(r.name)} <span class="badge ${esc(r.type)}">${esc(r.type)}${r.policy && r.policy !== "single-sig" && r.type === "Multisig" ? " " + esc(r.policy) : ""}</span></div>
+    <div class="wb">${btc(r.btc)} ₿</div>
+    <div class="wd">${esc(r.description || "")}<div class="wm">${r.pending ? "Not scanned yet" : r.scanned_at ? (r.source === "electrs" ? "Scanned " : "Updated ") + ago(r.scanned_at) : "From transaction ledger"}</div></div>
+    <div class="wv">${gbp(r.gbp)} · ${usd(r.usd)}<br><b>${r.pct.toFixed(1)}%</b></div>
+    <div class="pctbar"><i style="width:${Math.max(0, Math.min(100, r.pct))}%;background:${r.color}"></i></div></div>`).join("") +
+    `<div class="wrow total"><div class="wn">Total (${rows.length} wallets)</div><div class="wb">${btc(s.holdings.total)} ₿</div><div class="wd"></div><div class="wv">${gbp(s.value.gbp)} · ${usd(s.value.usd)}<br><b>100%</b></div></div>`;
+  const pos = rows.filter(r => r.btc > 0);
+  charts.d?.destroy();
+  charts.d = new Chart($("#ch-donut"), {type: "doughnut", data: {labels: pos.map(r => r.name), datasets: [{data: pos.map(r => r.btc), backgroundColor: pos.map(r => r.color), borderColor: "#151a21", borderWidth: 2}]},
+    options: {responsive: true, maintainAspectRatio: false, cutout: "62%", plugins: {legend: {position: "bottom", labels: {boxWidth: 12}},
+      tooltip: {callbacks: {label: c => `${c.label}: ${btc(c.parsed)} ₿ (${(c.parsed / s.holdings.total * 100).toFixed(1)}%)`}}}}});
 }
 
 function drawCharts() {
@@ -110,7 +134,10 @@ let pending = null;
 $("#f-import").onsubmit = async e => {
   e.preventDefault();
   try {
-    const p = await api("api/import/preview", {method: "POST", body: new FormData(e.target)}); pending = p;
+    const fd = new FormData(e.target), file = fd.get("file");
+    if (!file || !file.size) throw new Error("Choose a CSV file");
+    if (file.size > 20e6) throw new Error("File too large (max 20 MB)");
+    const p = await post("api/import/preview", {source: fd.get("source"), filename: file.name, text: await file.text()}); pending = p;
     const s = p.stats;
     $("#preview").innerHTML = `<h4>Preview — detected <b>${p.source}</b></h4>
       <p>${s.rows} rows: ${s.buys} buys, ${s.sells} sells, ${s.transfers} transfers · <b>${s.duplicates}</b> duplicates will be skipped</p>
@@ -126,6 +153,14 @@ $("#f-import").onsubmit = async e => {
 async function loadSettings() {
   const s = await api("api/settings"); const f = $("#f-settings");
   for (const el of f.elements) if (el.name && el.name in s) { if (el.type === "checkbox") el.checked = !!s[el.name]; else el.value = s[el.name] ?? ""; }
+  $("#strike-key-state").textContent = s.strike_key_set ? (s.strike_key_from_env ? "(set via environment)" : "(saved, encrypted - leave blank to keep)") : "(none saved)";
+  f.elements.strike_api_key.value = ""; f.elements.strike_api_key_clear.checked = false;
+  $("#override-phrase").textContent = s.override_phrase;
+  const ef = s.electrum_effective, um = s.electrs_umbrel;
+  $("#electrum-now").innerHTML = ef ? `Electrum server: <b>${esc(ef.host)}:${ef.port}</b> ${ef.overridden ? '<span class="err">custom server (sees your addresses)</span>' : '<span class="ok">Umbrel Electrs (locked)</span>'}${ef.ssl ? " · TLS " + (ef.pinned ? "pinned" : "CA-verified") : " · TCP"}`
+    : '<span class="err">Electrs not detected. Install the Electrs app on your Umbrel.</span>';
+  if (ef && ef.overridden) $("#electrum-adv").open = true;
+  if (!f.elements.electrum_port_override.value || f.elements.electrum_port_override.value === "0") f.elements.electrum_port_override.value = 50001;
   const nx = $("#strike-next"); if (nx) nx.textContent = s.strike_job_enabled ? (s.strike_next_run ? `Next balance check: ${ukTime(s.strike_next_run)}` : "") : "Scheduled Strike job is off.";
   loadWallets();
   const lg = await api("api/log");
@@ -133,8 +168,9 @@ async function loadSettings() {
 }
 $("#f-settings").onsubmit = async e => {
   e.preventDefault(); const d = Object.fromEntries(new FormData(e.target));
-  for (const k of ["other_income", "personal_allowance", "basic_band", "basic_rate", "higher_rate", "annual_exempt", "exempt_used", "sell_fee_pct", "strike_daily_gbp", "strike_weekday", "strike_monthday", "strike_check_delay_min", "gap_limit", "electrum_port"]) d[k] = +d[k];
-  d.electrum_ssl = d.electrum_ssl === "true";
+  for (const k of ["other_income", "personal_allowance", "basic_band", "basic_rate", "higher_rate", "annual_exempt", "exempt_used", "sell_fee_pct", "strike_daily_gbp", "strike_weekday", "strike_monthday", "strike_check_delay_min", "gap_limit", "electrum_port_override"]) d[k] = +d[k];
+  d.electrum_ssl = d.electrum_ssl === "true"; d.electrum_override = d.electrum_override === "true";
+  d.disable_external_prices = d.disable_external_prices === "true"; d.strike_api_key_clear = d.strike_api_key_clear === "true";
   d.strike_job_enabled = d.strike_job_enabled === "true";
   try { await post("api/settings", d); $("#save-msg").innerHTML = '<span class="ok">Saved</span>'; loadSettings(); } catch (err) { $("#save-msg").innerHTML = `<span class="err">${err.message}</span>`; }
 };
@@ -142,22 +178,37 @@ const act = (id, fn) => $(id).onclick = async () => { try { await fn(); } catch 
 act("#btn-strike-test", async () => { const r = await post("api/strike/test"); alert(`Strike OK: balance ${btc(r.balance)} BTC, rate ${gbp(r.rate_gbp)}`); });
 act("#btn-strike-run", async () => { const r = await post("api/strike/run"); alert(r.message || r.error); });
 act("#btn-scan", async () => { $("#scan-out").textContent = "Scanning via Electrum…"; const r = await post("api/cold/scan");
-  $("#scan-out").innerHTML = `<span class="ok">Balance ${btc(r.balance)} BTC</span> (${btc(r.unconfirmed)} unconfirmed) across ${r.used_addresses.length} used addresses` + (r.wallets || []).map(w => `<br>${esc(w.label)}: ${btc(w.balance)} BTC (${w.used} used addresses)`).join(""); });
+  $("#scan-out").innerHTML = `<span class="ok">Balance ${btc(r.balance)} BTC</span> (${btc(r.unconfirmed)} unconfirmed) across ${r.used_addresses.length} used addresses` + (r.wallets || []).map(w => `<br>${esc(w.name)}: ${btc(w.balance)} BTC (${w.used} used addresses)`).join(""); });
 const esc = t => String(t ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const addrList = r => r.map(a => `${a.chain} ${esc(a.path)} <code>${esc(a.address)}</code>`).join("<br>");
-const descSumm = s => [s.policy, s.type, s.network, s.fingerprints && s.fingerprints.length ? "fingerprints " + s.fingerprints.join(", ") : "", s.checksum_verified ? "checksum OK" : "", s.change_chain_inferred ? "change chain /1/* inferred" : ""].filter(Boolean).map(esc).join(" · ");
+const descSumm = s => [s.policy, s.script_type, s.network, s.fingerprints && s.fingerprints.length ? "fingerprints " + s.fingerprints.join(", ") : "", s.checksum_verified ? "checksum OK" : "", s.change_chain_inferred ? "change chain /1/* inferred" : ""].filter(Boolean).map(esc).join(" · ");
 async function loadWallets() {
   const ws = await api("api/cold/wallets"); const el = $("#cold-wallets");
-  el.innerHTML = ws.length ? ws.map(w => `<div class="cw"><b>${esc(w.label)}</b> <span class="sub">${w.kind === "invalid" ? esc(w.summary.error) : descSumm(w.summary)}</span> <code>${esc(w.preview)}</code>
-    <button type="button" data-addr="${esc(w.id)}">Show first addresses</button> <button type="button" class="danger" data-del="${esc(w.id)}">Remove</button></div>`).join("") : "No cold-storage wallets yet.";
-  el.querySelectorAll("[data-addr]").forEach(b => b.onclick = async () => { try { const r = await api(`api/cold/wallets/${b.dataset.addr}/addresses?n=5`); $("#scan-out").innerHTML = "Verify these match your wallet:<br>" + addrList(r); } catch (e) { alert(e.message); } });
-  el.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => { if (!confirm("Remove this cold-storage wallet from the app?")) return; await api(`api/cold/wallets/${b.dataset.del}`, {method: "DELETE"}); loadWallets(); });
+  el.innerHTML = ws.length ? ws.map(w => `<div class="cw" data-id="${esc(w.id)}"><b>${esc(w.name)}</b> <span class="badge ${esc(w.type)}">${esc(w.type)}</span>${w.type_overridden ? ' <span class="sub">(set manually; detected ' + esc(w.detected_type) + ')</span>' : ""}
+    <div class="sub">${esc(w.description || "")}</div><div class="sub">${descSumm(w)} · ${w.input === "descriptor" ? "descriptor" : "xpub"}${w.balance != null ? " · " + btc(w.balance) + " BTC" : ""}${w.scanned_at ? " · scanned " + ukTime(w.scanned_at) : ""}</div>
+    <div class="btns" style="margin-top:6px"><button type="button" data-edit>Edit</button><button type="button" data-addr>Show first addresses</button><button type="button" class="danger" data-del>Remove</button></div>
+    <div class="edit"><input data-f="name" maxlength="60" value="${esc(w.name)}" aria-label="Name"><input data-f="description" maxlength="200" value="${esc(w.description || "")}" placeholder="Description" aria-label="Description">
+      <select data-f="type" aria-label="Type label"><option value="auto">Auto (${esc(w.detected_type)})</option><option ${w.type_overridden && w.type === "Multisig" ? "selected" : ""}>Multisig</option><option ${w.type_overridden && w.type === "Single-sig" ? "selected" : ""}>Single-sig</option></select>
+      <button type="button" class="primary" data-save>Save</button></div></div>`).join("") : "No cold-storage wallets yet.";
+  el.querySelectorAll(".cw").forEach(row => {
+    const id = row.dataset.id;
+    row.querySelector("[data-edit]").onclick = () => row.classList.toggle("editing");
+    row.querySelector("[data-save]").onclick = async () => { try { const g = k => row.querySelector(`[data-f=${k}]`).value;
+      await post(`api/cold/wallets/${id}`, {name: g("name"), description: g("description"), type: g("type")}, "PUT"); loadWallets(); } catch (e) { alert(e.message); } };
+    row.querySelector("[data-addr]").onclick = async () => { try { const r = await api(`api/cold/wallets/${id}/addresses?n=5`); $("#scan-out").innerHTML = "Verify these match your wallet:<br>" + addrList(r); } catch (e) { alert(e.message); } };
+    row.querySelector("[data-del]").onclick = async () => { if (!confirm("Remove this cold-storage wallet from the app?")) return; await api(`api/cold/wallets/${id}`, {method: "DELETE"}); loadWallets(); };
+  });
 }
-const cwBody = () => ({label: $("#cw-label").value, spec: $("#cw-spec").value, script: $("#cw-script").value, n: 5});
+const cwMethod = () => { const d = $("#cw-method").value === "descriptor"; $("#cw-script-wrap").classList.toggle("hidden", d);
+  $("#cw-spec-lbl").textContent = d ? "Output descriptor or wallet export (Sparrow, Specter, Nunchuk/BSMS, Caravan, Electrum, Coldcard)" : "Extended public key (xpub / ypub / zpub)";
+  $("#cw-spec").placeholder = d ? "wsh(sortedmulti(2,[a1b2c3d4/48h/0h/0h/2h]xpub.../<0;1>/*,...))#checksum  or paste the export file" : "zpub6r..."; };
+$("#cw-method").onchange = cwMethod; cwMethod();
+const cwBody = () => ({name: $("#cw-label").value, description: $("#cw-desc").value, type: $("#cw-type").value, spec: $("#cw-spec").value,
+  script: $("#cw-method").value === "descriptor" ? "auto" : $("#cw-script").value, n: 5});
 act("#btn-cw-preview", async () => { const r = await post("api/cold/preview", cwBody());
-  $("#scan-out").innerHTML = `${descSumm(r.summary)}<br>Verify these match your wallet (not saved yet):<br>` + addrList(r.addresses); });
-act("#btn-cw-add", async () => { const r = await post("api/cold/wallets", cwBody()); $("#cw-spec").value = ""; $("#cw-label").value = "";
-  $("#scan-out").innerHTML = `<span class="ok">Added</span> ${descSumm(r.summary)}. Use "Show first addresses" to double-check, then Scan now.`; loadWallets(); });
+  $("#scan-out").innerHTML = `<b>${esc(r.name || "New wallet")}</b> <span class="badge ${esc(r.type)}">${esc(r.type)}</span> ${descSumm(r)}<br>Verify these match your wallet (not saved yet):<br>` + addrList(r.addresses); });
+act("#btn-cw-add", async () => { const r = await post("api/cold/wallets", cwBody()); ["#cw-spec", "#cw-label", "#cw-desc"].forEach(x => $(x).value = ""); $("#cw-type").value = "auto";
+  $("#scan-out").innerHTML = `<span class="ok">Added</span> <b>${esc(r.wallet.name)}</b> (${esc(r.wallet.type)}, ${descSumm(r.wallet)}). Use "Show first addresses" to double-check, then Scan now.`; loadWallets(); });
 act("#btn-prices", async () => { const r = await post("api/prices/refresh"); alert(`Cached ${r.days} daily prices`); });
 act("#btn-ex-load", async () => { const r = await post("api/example/load"); alert(`Inserted ${r.inserted} example rows`); });
 act("#btn-ex-del", async () => { if (!confirm("Delete all EXAMPLE transactions?")) return; const r = await api("api/example", {method: "DELETE"}); alert(`Deleted ${r.deleted}`); });

@@ -15,6 +15,10 @@ async def main():
                 await pg.goto(f"{BASE}/#{page}")
                 await pg.wait_for_timeout(2500)
                 await pg.screenshot(path=f"screenshots/{name}-{page}.png", full_page=True)
+                if page == "dash":
+                    await pg.add_style_tag(content="header{position:static!important}")
+                    el = await pg.query_selector(".wgrid")
+                    await el.screenshot(path=f"screenshots/{name}-wallets.png")
         await b.close()
 
 asyncio.run(main())

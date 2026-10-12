@@ -6,8 +6,20 @@ _spot = {"t": 0, "gbp": None, "usd": None, "src": None}
 UA = {"User-Agent": "satoshi-btc-dashboard/1.0"}
 
 
-def spot():
-    if time.time() - _spot["t"] < 60 and _spot["gbp"]:
+def spot(external=True, strike_key=""):
+    """external=False: never contact CoinGecko/Kraken; use Strike's ticker if a key is configured."""
+    if time.time() - _spot["t"] < 60 and _spot["gbp"] and (external or _spot["src"] in ("strike", None)):
+        return _spot
+    if not external:
+        if strike_key:
+            try:
+                from . import strike
+                _spot.update(t=time.time(), gbp=strike.rate_btc(strike_key, "GBP"),
+                             usd=strike.rate_btc(strike_key, "USD"), src="strike")
+            except Exception:
+                pass
+        else:
+            _spot.update(t=time.time(), gbp=None, usd=None, src=None)
         return _spot
     try:
         r = httpx.get("https://api.coingecko.com/api/v3/simple/price",

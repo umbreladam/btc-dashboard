@@ -4,7 +4,7 @@ name: Satoshi BTC Dashboard
 tagline: Private Bitcoin-only portfolio tracker with UK CGT
 icon: https://raw.githubusercontent.com/umbreladam/umbrel-app-store/main/satoshi-btc-dashboard/icon.svg
 category: bitcoin
-version: "1.0.1"
+version: "1.0.2"
 port: 8765
 description: >-
   A self-hosted, Bitcoin-only portfolio dashboard. Track BTC held on Strike, exchanges and
@@ -26,11 +26,16 @@ repo: https://github.com/umbreladam/btc-dashboard
 support: https://github.com/umbreladam/btc-dashboard/issues
 gallery: []
 releaseNotes: >-
-  Multisig cold storage: paste an output descriptor (wsh/sh-wsh/sh sortedmulti or multi, key origins,
-  /<0;1>/* multipath, checksum verified) or a Sparrow, Specter, Nunchuk, Caravan, Electrum or Coldcard
-  export. Track several labelled cold wallets (e.g. multisig + single-sig). "Show first addresses" now
-  shows receive and change addresses before saving so you can compare with your wallet. Still
-  watch-only: no transactions or PSBTs; descriptors stay in /data and only script hashes go to your Electrs.
+  Wallets: every wallet now has a name, optional description and a Multisig / Single-sig label (auto-detected,
+  e.g. 2-of-3, and editable). Rename, describe or relabel wallets without re-entering keys; keys are write-only after
+  saving. New dashboard Wallets panel (Strike, each cold wallet, exchanges: BTC, GBP/USD, % of total, last scanned)
+  and a holdings-by-wallet donut. Existing wallets are migrated automatically.
+
+  Security: the app only accepts requests from Umbrel's app proxy (so other apps on your Umbrel can't bypass
+  the Umbrel login), CSRF protection on all changes, Electrum locked to your Umbrel's Electrs (a custom server
+  needs explicit confirmation; TLS certificates verified, self-signed fingerprint pinning), no key material in
+  any API response, Strike key encrypted at rest, owner-only data files, API docs disabled, and an option to
+  turn off external price lookups. Note: a custom Electrum host set in 1.0.1 is reset to Umbrel's Electrs.
 dependencies:
   - electrs
 path: ""

@@ -42,7 +42,7 @@ def tax_settings(s):
                                                         "basic_rate", "higher_rate", "annual_exempt", "exempt_used")})
 
 
-def summary(c):
+def summary(c, strike_key="", cold_wallets=None):
     s = db.get_settings(c)
     txs = load(c)
     ledger = wallets(txs)
@@ -52,7 +52,11 @@ def summary(c):
     total = strike + cold + other
     ev = events(txs)
     res = cgt.match(ev) if ev else cgt.Result([], 0, 0)
-    sp = prices.spot()
+    sp = dict(prices.spot(external=not s.get("disable_external_prices"), strike_key=strike_key))
+    if not sp.get("gbp"):  # offline / external fetches disabled without Strike: last cached daily close
+        r = c.execute("SELECT gbp, usd FROM prices WHERE gbp IS NOT NULL ORDER BY day DESC LIMIT 1").fetchone()
+        if r:
+            sp.update(gbp=r["gbp"], usd=r["usd"], src="cached daily close")
     pg, pu = sp.get("gbp") or 0, sp.get("usd") or 0
     value_gbp = total * pg
     # Cost basis = Section 104 pool cost (matches what HMRC uses after same-day/30-day matches)
@@ -68,7 +72,9 @@ def summary(c):
         hypo = {"error": str(e)}
     realised_ty = sum(d.gain for d in res.disposals if cgt.tax_year_of(d.day) == cgt.tax_year_of(today))
     buys = [t for t in txs if t["kind"] == "buy"]
+    rows = wallet_rows(s, ledger, cold_wallets or [], strike, total, pg, pu)
     return {
+        "wallets": rows,
         "price": {"gbp": pg, "usd": pu, "source": sp.get("src")},
         "holdings": {"total": total, "strike": strike, "cold": cold, "other": other, "ledger": ledger,
                      "ledger_btc": ledger_btc,
@@ -85,6 +91,51 @@ def summary(c):
                    "estimates": sum(t["estimate"] for t in txs)},
         "total_invested_gbp": sum(t["gbp"] for t in buys),
     }
+
+
+EXCHANGE_NAMES = {"strike": "Strike", "coinbase": "Coinbase", "kraken": "Kraken", "other": "Other", "cold": "Cold storage (ledger)"}
+
+
+def wallet_rows(s, ledger, cold, strike_btc, total, pg, pu):
+    """One row per wallet for the Wallets panel. Rows sum to holdings.total."""
+    rows = []
+    sc = s.get("strike_balance_cache") or {}
+    rows.append({"id": "strike", "name": "Strike", "type": "Exchange", "description": "Strike account" +
+                 (" (live API balance)" if sc else " (from transaction ledger)"), "btc": strike_btc,
+                 "scanned_at": sc.get("at"), "source": "strike-api" if sc else "ledger"})
+    cache = s.get("cold_balance_cache")
+    if cache:
+        per = {w.get("id"): w for w in cache.get("wallets", [])}
+        for w in cold:
+            p = per.get(w["id"], {})
+            rows.append({"id": w["id"], "name": w["name"], "type": w["type"], "policy": w.get("policy"),
+                         "description": w.get("description", ""), "btc": p.get("balance", 0.0),
+                         "scanned_at": p.get("at") or cache.get("at"), "source": "electrs"})
+        known = sum(r["btc"] for r in rows[1:])
+        if abs(cache["btc"] - known) > 1e-9:  # e.g. a wallet removed since the last scan
+            rows.append({"id": "cold-other", "name": "Cold storage (unattributed)", "type": "Single-sig",
+                         "description": "Last scan total not matched to a current wallet", "btc": round(cache["btc"] - known, 8),
+                         "scanned_at": cache.get("at"), "source": "electrs"})
+    else:
+        for w in cold:
+            rows.append({"id": w["id"], "name": w["name"], "type": w["type"], "policy": w.get("policy"),
+                         "description": w.get("description", ""), "btc": 0.0, "scanned_at": None,
+                         "source": "not scanned", "pending": True})
+        if ledger.get("cold"):
+            rows.append({"id": "cold", "name": "Cold storage (ledger)", "type": "Cold", "description":
+                         "From transfers in your transaction history; scan a wallet for live balances",
+                         "btc": ledger["cold"], "scanned_at": None, "source": "ledger"})
+    for k, v in sorted(ledger.items()):
+        if k in ("strike", "cold") or abs(v) < 1e-12:
+            continue
+        rows.append({"id": "x-" + k, "name": EXCHANGE_NAMES.get(k, k.title()), "type": "Exchange" if k != "other" else "Other",
+                     "description": "Derived from imported/manual transactions", "btc": v, "scanned_at": None,
+                     "source": "ledger"})
+    for r in rows:
+        r["btc"] = round(r["btc"], 8)
+        r["gbp"], r["usd"] = r["btc"] * pg, r["btc"] * pu
+        r["pct"] = (r["btc"] / total * 100) if total else 0
+    return rows
 
 
 def series(c):

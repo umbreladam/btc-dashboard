@@ -1,24 +1,65 @@
-import asyncio, os, json
+import asyncio, os, json, logging
 from datetime import datetime, timezone, date, timedelta
 from zoneinfo import ZoneInfo
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
-from . import descriptor, schedule, db, importers, portfolio, prices, strike, electrum, example
+from . import descriptor, schedule, db, importers, portfolio, prices, strike, electrum, example, security, wallets
 
+os.umask(0o077)  # every file this process creates (DB, WAL, key file) is owner-only
 LDN = ZoneInfo("Europe/London")
 STATIC = os.path.join(os.path.dirname(__file__), "static")
-app = FastAPI(title="Satoshi BTC Dashboard")
-SECRET_KEYS = {"strike_api_key"}
+app = FastAPI(title="Satoshi BTC Dashboard", docs_url=None, redoc_url=None, openapi_url=None)
+log = logging.getLogger("satoshi")
+TRUSTED_PEERS = security.trusted_peers()
+OVERRIDE_PHRASE = "this reveals my addresses"
+GENERIC_WALLET_ERR = "Could not read that xpub / descriptor / wallet export"
+
+
+@app.middleware("http")
+async def guard(request: Request, call_next):
+    peer = request.client.host if request.client else None
+    if peer not in TRUSTED_PEERS:
+        return JSONResponse({"detail": "Forbidden: open this app through Umbrel"}, status_code=403)
+    if not security.csrf_ok(request.method, request.headers, request.headers.get("host")):
+        return JSONResponse({"detail": "Forbidden: missing CSRF header or JSON content type"}, status_code=403)
+    resp = await call_next(request)
+    resp.headers.setdefault("Cache-Control", "no-store")
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    return resp
+
+
+def init_storage():
+    db.init()
+    db.secure_files()
+    with db.conn() as c:
+        s = db.get_settings(c)
+        upd = {}
+        ws, changed = wallets.migrate(s)
+        if changed:
+            upd.update(cold_wallets=ws, xpub="")
+        raw = s.get("strike_api_key") or ""
+        if raw and not raw.startswith("enc:"):
+            upd["strike_api_key"] = security.encrypt(db.DATA_DIR, raw)
+        if upd:
+            db.set_settings(c, upd)
+            if changed:
+                db.log(c, "migrate", f"wallets migrated to schema {wallets.SCHEMA} ({len(ws)} wallet(s))")
 
 
 @app.on_event("startup")
 async def startup():
-    db.init()
+    init_storage()
+    if os.environ.get("BTC_DASH_NO_SCHEDULER") == "1":
+        return
     with db.conn() as c:
-        if os.environ.get("LOAD_EXAMPLE_DATA", "1") == "1" and not db.get_settings(c).get("example_seeded"):
-            prices.refresh_history(c, date(2021, 1, 1))
+        s = db.get_settings(c)
+        if os.environ.get("LOAD_EXAMPLE_DATA", "1") == "1" and not s.get("example_seeded"):
+            if not s.get("disable_external_prices"):
+                prices.refresh_history(c, date(2021, 1, 1))
             example.generate(c, {k: v[0] for k, v in prices.history(c).items()})
             db.set_settings(c, {"example_seeded": True})
     asyncio.create_task(scheduler())
@@ -34,26 +75,46 @@ async def scheduler():
                 s = db.get_settings(c)
             if strike_key(s) and schedule.should_run(now, s):
                 await asyncio.to_thread(run_strike_job)
-            if s.get("prices_day") != now.date().isoformat():
+            if s.get("prices_day") != now.date().isoformat() and not s.get("disable_external_prices"):
                 with db.conn() as c:
                     await asyncio.to_thread(prices.refresh_history, c, date(2021, 1, 1))
                     db.set_settings(c, {"prices_day": now.date().isoformat()})
-            if cold_wallets(s) and s["electrum_host"] and asyncio.get_event_loop().time() - last_cold > 1800:
+            if cold_wallets(s) and electrum_target(s) and asyncio.get_event_loop().time() - last_cold > 1800:
                 last_cold = asyncio.get_event_loop().time()
                 try:
                     await cold_scan()
                 except Exception as e:
                     with db.conn() as c:
-                        db.log(c, "cold", f"scan failed: {e}")
+                        db.log(c, "cold", f"scan failed ({safe_err(e)})")
         except Exception as e:
             with db.conn() as c:
-                db.log(c, "scheduler", repr(e))
+                db.log(c, "scheduler", type(e).__name__)
         await asyncio.sleep(30)
 
 
+def safe_err(e) -> str:
+    """Error text that can't carry key material: exception type plus messages from our own network layer only."""
+    if isinstance(e, HTTPException):
+        return str(e.detail)
+    if isinstance(e, (OSError, asyncio.TimeoutError, ConnectionError)):
+        return f"{type(e).__name__}: connection failed" if not str(e) or "pinned" not in str(e) else str(e)
+    return type(e).__name__
+
+
 def strike_key(s) -> str:
-    """Key comes from the user's Settings entry; env STRIKE_API_KEY is an optional runtime override."""
-    return s.get("strike_api_key") or os.environ.get("STRIKE_API_KEY", "")
+    """Key comes from the user's Settings entry (encrypted at rest); env STRIKE_API_KEY is an optional override."""
+    return security.decrypt(db.DATA_DIR, s.get("strike_api_key") or "") or os.environ.get("STRIKE_API_KEY", "")
+
+
+def electrum_target(s):
+    """(host, port, ssl, cert_fp). Locked to Umbrel's Electrs unless an explicit, confirmed override is set."""
+    if s.get("electrum_override") and s.get("electrum_override_confirm") == OVERRIDE_PHRASE and s.get("electrum_host_override"):
+        return (s["electrum_host_override"], int(s.get("electrum_port_override") or 50001),
+                bool(s.get("electrum_ssl")), s.get("electrum_cert_fp") or "")
+    host, port = db.umbrel_electrs()
+    if not host:
+        return None
+    return host, port, bool(s.get("electrum_ssl")), s.get("electrum_cert_fp") or ""
 
 
 def run_strike_job():
@@ -68,12 +129,12 @@ def run_strike_job():
             rate = strike.rate_btc_gbp(key)
             cur = str(s.get("strike_dca_currency") or "GBP").upper()
             amount = float(s["strike_daily_gbp"])
-            # Amount in GBP for the ledger: convert via Strike's BTC/<cur> rate if needed
             amount_gbp = amount if cur == "GBP" else round(amount / strike.rate_btc(key, cur) * rate, 2)
         except Exception as e:
-            db.log(c, "strike", f"API error: {e}")
+            msg = f"HTTP {e.response.status_code}" if hasattr(e, "response") and e.response is not None else type(e).__name__
+            db.log(c, "strike", f"API error: {msg}")
             db.set_settings(c, {"strike_last_run": today})
-            return {"error": str(e)}
+            return {"error": f"Strike API error: {msg}"}
         txs = strike.daily_record(s["strike_last_balance"], bal, rate, amount_gbp)
         now = datetime.now(timezone.utc).isoformat()
         for t in txs:
@@ -88,22 +149,8 @@ def run_strike_job():
 
 
 def cold_wallets(s):
-    """Configured cold-storage wallets. A 1.0.0 single xpub shows up as one wallet until edited."""
-    if s.get("cold_wallets"):
-        return s["cold_wallets"]
-    if s.get("xpub"):
-        return [{"id": "legacy", "label": "Cold storage", "spec": s["xpub"], "script": s.get("xpub_script", "auto")}]
-    return []
-
-
-def wallet_info(spec, script="auto"):
-    """Validate an xpub / descriptor / wallet export. Returns (normalised spec, kind, summary)."""
-    if electrum.is_descriptor(spec):
-        d = descriptor.from_input(spec)
-        d.derive(0, 0, 1)
-        return d.canonical(), "descriptor", d.summary()
-    k, stype, net = electrum.parse_xpub(spec, script)
-    return spec.strip(), "xpub", {"type": stype, "policy": "single-sig", "keys": 1}
+    ws, _ = wallets.migrate(s)
+    return ws
 
 
 def wallet_addresses(spec, script, n):
@@ -117,28 +164,29 @@ def wallet_addresses(spec, script, n):
 async def cold_scan():
     with db.conn() as c:
         s = db.get_settings(c)
-    wallets = cold_wallets(s)
-    if not wallets:
+    ws = cold_wallets(s)
+    if not ws:
         raise HTTPException(400, "No cold-storage wallet configured")
-    if not s["electrum_host"]:
-        raise HTTPException(400, "No Electrum host configured")
+    tgt = electrum_target(s)
+    if not tgt:
+        raise HTTPException(400, "Electrs not found: install the Electrs app on Umbrel")
     gap = max(int(s["gap_limit"]), 20)
+    now = datetime.now(timezone.utc).isoformat()
     res = {"confirmed": 0.0, "unconfirmed": 0.0, "balance": 0.0, "used_addresses": [], "wallets": []}
-    for w in wallets:
-        r = await electrum.scan(w["spec"], s["electrum_host"], s["electrum_port"], bool(s["electrum_ssl"]),
-                                gap, w.get("script", "auto"))
+    for w in ws:
+        r = await electrum.scan(w["spec"], tgt[0], tgt[1], tgt[2], gap, w.get("script", "auto"), cert_fp=tgt[3])
         for k in ("confirmed", "unconfirmed", "balance"):
             res[k] += r[k]
-        res["used_addresses"] += [dict(a, wallet=w["label"]) for a in r["used_addresses"]]
-        res["wallets"].append({"id": w["id"], "label": w["label"], "balance": r["balance"],
-                               "unconfirmed": r["unconfirmed"], "used": len(r["used_addresses"])})
+        res["used_addresses"] += [dict(a, wallet=w["name"]) for a in r["used_addresses"]]
+        res["wallets"].append({"id": w["id"], "name": w["name"], "balance": round(r["balance"], 8),
+                               "unconfirmed": r["unconfirmed"], "used": len(r["used_addresses"]), "at": now})
     for k in ("confirmed", "unconfirmed", "balance"):
         res[k] = round(res[k], 8)
     with db.conn() as c:
-        db.set_settings(c, {"cold_balance_cache": {"btc": res["balance"], "at": datetime.now(timezone.utc).isoformat(),
+        db.set_settings(c, {"cold_balance_cache": {"btc": res["balance"], "at": now,
                                                    "addresses": len(res["used_addresses"]), "wallets": res["wallets"]}})
         db.log(c, "cold", f"balance {res['balance']:.8f} BTC across {len(res['used_addresses'])} used addresses in "
-                          f"{len(wallets)} wallet(s): " + ", ".join(f"{w['label']} {w['balance']:.8f}" for w in res["wallets"]))
+                          f"{len(ws)} wallet(s): " + ", ".join(f"{w['name']} {w['balance']:.8f}" for w in res["wallets"]))
     return res
 
 
@@ -146,7 +194,8 @@ async def cold_scan():
 @app.get("/api/summary")
 def api_summary():
     with db.conn() as c:
-        return portfolio.summary(c)
+        s = db.get_settings(c)
+        return portfolio.summary(c, strike_key(s), [wallets.public_view(w) for w in cold_wallets(s)])
 
 
 @app.get("/api/series")
@@ -206,10 +255,19 @@ def api_del(tid: int):
     return {"ok": True}
 
 
+class ImportIn(BaseModel):
+    text: str
+    source: str = "auto"
+    filename: str = ""
+
+
 @app.post("/api/import/preview")
-async def api_preview(file: UploadFile = File(...), source: str = Form("auto")):
-    text = (await file.read()).decode("utf-8-sig", errors="replace")
-    src = importers.detect(text) if source == "auto" else source
+def api_preview(p: ImportIn):
+    """CSV is sent as JSON text (not multipart) so every write request carries the JSON + CSRF-header checks."""
+    text = p.text.lstrip("\ufeff")
+    if len(text) > 20_000_000:
+        raise HTTPException(413, "File too large")
+    src = importers.detect(text) if p.source == "auto" else p.source
     if src not in importers.PARSERS:
         raise HTTPException(400, "Could not detect export type - choose Coinbase, Kraken or Strike")
     rows, errs = importers.PARSERS[src](text)
@@ -235,30 +293,47 @@ def api_commit(payload: dict):
     return {"inserted": n}
 
 
+HIDDEN_SETTINGS = {"cold_wallets", "xpub", "xpub_script", "strike_api_key", "cold_balance_cache", "strike_balance_cache",
+                   "electrum_host", "electrum_port"}
+
+
 @app.get("/api/settings")
 def api_get_settings():
     with db.conn() as c:
         s = db.get_settings(c)
-    s.pop("cold_wallets", None)  # served (abbreviated) by /api/cold/wallets
-    for k in SECRET_KEYS:
-        s[k] = ("••••" + s[k][-4:]) if s[k] else ""
-    s["strike_key_set"] = bool(s["strike_api_key"]) or bool(os.environ.get("STRIKE_API_KEY"))
+    out = {k: v for k, v in s.items() if k not in HIDDEN_SETTINGS}
+    out["strike_api_key"] = ""  # write-only
+    out["strike_key_set"] = bool(s.get("strike_api_key")) or bool(os.environ.get("STRIKE_API_KEY"))
+    out["strike_key_from_env"] = bool(os.environ.get("STRIKE_API_KEY")) and not s.get("strike_api_key")
+    host, port = db.umbrel_electrs()
+    out["electrs_umbrel"] = {"host": host, "port": port}
+    tgt = electrum_target(s)
+    out["electrum_effective"] = {"host": tgt[0], "port": tgt[1], "ssl": tgt[2], "pinned": bool(tgt[3]),
+                                 "overridden": tgt[0] != host or tgt[1] != port} if tgt else None
+    out["override_phrase"] = OVERRIDE_PHRASE
     try:
-        s["strike_next_run"] = schedule.next_check(datetime.now(LDN), s["strike_frequency"], s["strike_job_time"],
-                                                   s["strike_weekday"], s["strike_monthday"],
-                                                   s["strike_check_delay_min"], s.get("strike_last_run")).isoformat() \
+        out["strike_next_run"] = schedule.next_check(datetime.now(LDN), s["strike_frequency"], s["strike_job_time"],
+                                                     s["strike_weekday"], s["strike_monthday"],
+                                                     s["strike_check_delay_min"], s.get("strike_last_run")).isoformat() \
             if s["strike_job_enabled"] else None
     except Exception:
-        s["strike_next_run"] = None
-    return s
+        out["strike_next_run"] = None
+    return out
+
+
+SETTABLE = set(db.DEFAULTS) - {"cold_wallets", "cold_balance_cache", "strike_balance_cache", "strike_last_balance", "xpub",
+                               "xpub_script"}
 
 
 @app.post("/api/settings")
 def api_set_settings(d: dict):
-    allowed = set(db.DEFAULTS) - {"cold_wallets", "cold_balance_cache", "strike_balance_cache", "strike_last_balance"}
-    upd = {k: v for k, v in d.items() if k in allowed}
-    if str(upd.get("strike_api_key", "")).startswith("••••"):
-        upd.pop("strike_api_key")
+    upd = {k: v for k, v in d.items() if k in SETTABLE}
+    if "strike_api_key" in upd:
+        k = str(upd.pop("strike_api_key") or "").strip()
+        if k and not k.startswith("••••"):
+            upd["strike_api_key"] = security.encrypt(db.DATA_DIR, k)
+    if d.get("strike_api_key_clear"):
+        upd["strike_api_key"] = ""
     if "strike_job_time" in upd:
         try:
             schedule.parse_time(upd["strike_job_time"])
@@ -268,83 +343,117 @@ def api_set_settings(d: dict):
         raise HTTPException(400, "Frequency must be daily, weekly or monthly")
     if "gap_limit" in upd:
         upd["gap_limit"] = max(int(upd["gap_limit"] or 25), 20)
-    if upd.get("xpub"):
-        try:
-            electrum.parse_xpub(upd["xpub"], upd.get("xpub_script", "auto"))
-        except Exception as e:
-            raise HTTPException(400, f"Invalid extended public key: {e}")
+    for b in ("electrum_ssl", "electrum_override", "disable_external_prices", "strike_job_enabled"):
+        if b in upd:
+            upd[b] = upd[b] is True or str(upd[b]).lower() == "true"
+    try:
+        if "electrum_cert_fp" in upd:
+            upd["electrum_cert_fp"] = electrum.norm_fingerprint(upd["electrum_cert_fp"])
+        if upd.get("electrum_override"):
+            if str(upd.get("electrum_override_confirm", "")).strip().lower() != OVERRIDE_PHRASE:
+                raise ValueError(f'To use a non-Umbrel Electrum server type "{OVERRIDE_PHRASE}" to confirm')
+            upd["electrum_override_confirm"] = OVERRIDE_PHRASE
+            upd["electrum_host_override"], upd["electrum_port_override"] = electrum.validate_host(
+                upd.get("electrum_host_override"), upd.get("electrum_port_override") or 50001)
+        elif "electrum_override" in upd:
+            upd.update(electrum_override_confirm="", electrum_host_override="", electrum_port_override=50001)
+        else:
+            for k in ("electrum_override_confirm", "electrum_host_override", "electrum_port_override"):
+                upd.pop(k, None)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     with db.conn() as c:
         old = db.get_settings(c)
-        if "xpub" in upd and upd["xpub"] != old["xpub"]:
-            db.set_settings(c, {"cold_balance_cache": None})
         if upd.get("strike_api_key") == "" and old["strike_api_key"]:
             db.set_settings(c, {"strike_balance_cache": None, "strike_last_balance": None})
+        if electrum_target(old) != electrum_target({**old, **upd}):
+            db.set_settings(c, {"cold_balance_cache": None})
         db.set_settings(c, upd)
     return {"ok": True}
 
 
-@app.get("/api/xpub/addresses")
-def api_addresses(n: int = 5):
-    with db.conn() as c:
-        s = db.get_settings(c)
-    w = cold_wallets(s)
-    if not w:
-        return []
-    return [{"path": p, "address": a} for p, a, _ in electrum.derive(w[0]["spec"], 0, 0, n, w[0].get("script", "auto"))]
-
-
+# ---------------- cold wallets (key material is write-only) ----------------
 class WalletIn(BaseModel):
-    label: str = ""
+    name: str = ""
+    label: str = ""  # 1.0.1 field name
+    description: str = ""
+    type: str | None = None  # None/"auto" = auto-detect, or "Multisig"/"Single-sig"
     spec: str
     script: str = "auto"
     n: int = 5
 
 
-def _bad(e):
-    return HTTPException(400, f"Invalid xpub / descriptor: {e}")
+class WalletEdit(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    type: str | None = None  # "auto" resets to detected
+
+
+def _bad():
+    return HTTPException(400, GENERIC_WALLET_ERR + ". Check it is complete and contains only PUBLIC keys.")
 
 
 @app.get("/api/cold/wallets")
 def api_wallets():
     with db.conn() as c:
         s = db.get_settings(c)
-    out = []
-    for w in cold_wallets(s):
-        try:
-            _, kind, summ = wallet_info(w["spec"], w.get("script", "auto"))
-        except Exception as e:
-            kind, summ = "invalid", {"error": str(e)}
-        sp = w["spec"]
-        out.append({"id": w["id"], "label": w["label"], "kind": kind, "summary": summ,
-                    "preview": sp[:24] + "…" + sp[-12:] if len(sp) > 40 else sp})
-    return out
+    cache = {w["id"]: w for w in (s.get("cold_balance_cache") or {}).get("wallets", []) if "id" in w}
+    return [dict(wallets.public_view(w), balance=cache.get(w["id"], {}).get("balance"),
+                 scanned_at=cache.get(w["id"], {}).get("at") or (s.get("cold_balance_cache") or {}).get("at")
+                 if w["id"] in cache else None) for w in cold_wallets(s)]
 
 
 @app.post("/api/cold/preview")
 def api_wallet_preview(w: WalletIn):
-    """First receive + change addresses for an UNSAVED xpub/descriptor, to compare with your wallet."""
+    """First receive + change addresses for an UNSAVED xpub/descriptor. Returns name + fingerprints + type only."""
     try:
-        spec, kind, summ = wallet_info(w.spec, w.script)
-        return {"kind": kind, "summary": summ, "descriptor": spec if kind == "descriptor" else None,
-                "addresses": wallet_addresses(spec, w.script, max(1, min(w.n, 50)))}
-    except Exception as e:
-        raise _bad(e)
+        info = wallets.detect(w.spec, w.script)
+        addrs = wallet_addresses(info["spec"], w.script, max(1, min(w.n, 50)))
+    except Exception:
+        raise _bad()
+    return {"name": wallets.clean(w.name or w.label, 60), "type": wallets.check_type(w.type) if w.type in wallets.TYPES else info["detected_type"],
+            "detected_type": info["detected_type"], "policy": info["policy"], "fingerprints": info["fingerprints"],
+            "script_type": info["script_type"], "network": info["network"], "checksum_verified": info["checksum_verified"],
+            "change_chain_inferred": info["change_chain_inferred"], "addresses": addrs}
 
 
 @app.post("/api/cold/wallets")
 def api_wallet_add(w: WalletIn):
-    try:
-        spec, kind, summ = wallet_info(w.spec, w.script)
-    except Exception as e:
-        raise _bad(e)
-    import secrets
     with db.conn() as c:
         s = db.get_settings(c)
-        ws = [dict(x) for x in cold_wallets(s)]
-        label = (w.label or "").strip()[:60] or f"Wallet {len(ws) + 1}"
-        ws.append({"id": secrets.token_hex(4), "label": label, "spec": spec, "script": w.script})
+        ws = cold_wallets(s)
+        try:
+            nw = wallets.make(w.name or w.label, w.description, w.spec, w.script, w.type, len(ws))
+        except ValueError as e:
+            raise _bad() if GENERIC_WALLET_ERR in str(e) else HTTPException(400, str(e))
+        if any(x.get("spec") == nw["spec"] for x in ws):
+            raise HTTPException(409, "That wallet is already added")
+        nw["schema"] = wallets.SCHEMA
+        ws.append(nw)
         db.set_settings(c, {"cold_wallets": ws, "xpub": "", "cold_balance_cache": None})
-    return {"ok": True, "kind": kind, "summary": summ}
+    return {"ok": True, "wallet": wallets.public_view(nw)}
+
+
+@app.put("/api/cold/wallets/{wid}")
+def api_wallet_edit(wid: str, e: WalletEdit):
+    """Edit name / description / type label. Key material can't be changed or read: remove + re-add instead."""
+    with db.conn() as c:
+        s = db.get_settings(c)
+        ws = cold_wallets(s)
+        for w in ws:
+            if w["id"] == wid:
+                if e.name is not None:
+                    w["name"] = wallets.clean(e.name, 60) or w["name"]
+                if e.description is not None:
+                    w["description"] = wallets.clean(e.description, 200)
+                if e.type is not None:
+                    try:
+                        w["type_override"] = wallets.check_type(e.type)
+                    except ValueError as x:
+                        raise HTTPException(400, str(x))
+                db.set_settings(c, {"cold_wallets": ws, "xpub": ""})
+                return {"ok": True, "wallet": wallets.public_view(w)}
+    raise HTTPException(404, "Unknown wallet")
 
 
 @app.delete("/api/cold/wallets/{wid}")
@@ -362,7 +471,10 @@ def api_wallet_addresses(wid: str, n: int = 5):
         s = db.get_settings(c)
     for w in cold_wallets(s):
         if w["id"] == wid:
-            return wallet_addresses(w["spec"], w.get("script", "auto"), max(1, min(n, 50)))
+            try:
+                return wallet_addresses(w["spec"], w.get("script", "auto"), max(1, min(n, 50)))
+            except Exception:
+                raise _bad()
     raise HTTPException(404, "Unknown wallet")
 
 
@@ -373,7 +485,7 @@ async def api_cold():
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(502, f"Electrum error: {e}")
+        raise HTTPException(502, f"Electrum error ({safe_err(e)})")
 
 
 @app.post("/api/strike/run")
@@ -390,12 +502,15 @@ def api_strike_test():
     try:
         return {"balance": strike.balance_btc(key), "rate_gbp": strike.rate_btc_gbp(key)}
     except Exception as e:
-        raise HTTPException(502, str(e))
+        code = getattr(getattr(e, "response", None), "status_code", None)
+        raise HTTPException(502, f"Strike API error ({'HTTP %s' % code if code else type(e).__name__})")
 
 
 @app.post("/api/prices/refresh")
 def api_prices():
     with db.conn() as c:
+        if db.get_settings(c).get("disable_external_prices"):
+            raise HTTPException(400, "External price fetches are disabled in Settings")
         return {"days": prices.refresh_history(c, date(2021, 1, 1))}
 
 

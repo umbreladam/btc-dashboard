@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS joblog (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT
 
 
 def connect():
-    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(DATA_DIR, mode=0o700, exist_ok=True)
     c = sqlite3.connect(DB_PATH)
     c.row_factory = sqlite3.Row
     return c
@@ -48,6 +48,26 @@ def conn():
 def init():
     with conn() as c:
         c.executescript(SCHEMA)
+    secure_files()
+
+
+def secure_files():
+    """DB (+ WAL/SHM journals) owner read/write only."""
+    for suffix in ("", "-wal", "-shm", "-journal"):
+        p = DB_PATH + suffix
+        if os.path.exists(p):
+            os.chmod(p, 0o600)
+
+
+def umbrel_electrs():
+    """Electrs address exported by Umbrel's electrs app (APP_ELECTRS_NODE_IP/PORT, passed through compose)."""
+    host = (os.environ.get("APP_ELECTRS_NODE_IP") or os.environ.get("ELECTRUM_HOST") or "").strip()
+    port = os.environ.get("APP_ELECTRS_NODE_PORT") or os.environ.get("ELECTRUM_PORT") or "50001"
+    try:
+        port = int(port)
+    except ValueError:
+        port = 50001
+    return host, port
 
 
 def dedupe_key(t: dict) -> str:
@@ -79,8 +99,10 @@ DEFAULTS = {
     "strike_frequency": "daily", "strike_weekday": 0, "strike_monthday": 1, "strike_job_time": "15:25",
     "strike_check_delay_min": 10, "strike_last_balance": None,
     "xpub": "", "xpub_script": "auto", "gap_limit": 25, "cold_wallets": [],
-    "electrum_host": os.environ.get("ELECTRUM_HOST", ""), "electrum_port": int(os.environ.get("ELECTRUM_PORT", "50001") or 50001),
-    "electrum_ssl": False, "price_source": "coingecko",
+    # Electrum server is locked to Umbrel's Electrs (umbrel_electrs()); a different server needs an explicit override
+    "electrum_ssl": False, "electrum_cert_fp": "", "electrum_override": False, "electrum_override_confirm": "",
+    "electrum_host_override": "", "electrum_port_override": 50001,
+    "price_source": "coingecko", "disable_external_prices": False,
     "cold_balance_cache": None, "strike_balance_cache": None,
 }
 

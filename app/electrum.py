@@ -52,16 +52,57 @@ def derive(x: str, chain: int, start: int, n: int, override="auto"):
     return out
 
 
+_HOST_RE = __import__("re").compile(r"^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$")
+
+
+def validate_host(host: str, port) -> tuple[str, int]:
+    """Hostname or IP literal (no scheme, path, credentials or spaces) and a port 1-65535."""
+    import ipaddress
+    h = str(host or "").strip()
+    if h.startswith("[") and h.endswith("]"):
+        h = h[1:-1]
+    try:
+        ipaddress.ip_address(h)
+    except ValueError:
+        if not _HOST_RE.match(h):
+            raise ValueError("Electrum host must be a hostname or IP address")
+    try:
+        p = int(port)
+    except (TypeError, ValueError):
+        raise ValueError("Electrum port must be a number")
+    if not 1 <= p <= 65535:
+        raise ValueError("Electrum port must be 1-65535")
+    return h, p
+
+
+def norm_fingerprint(fp: str) -> str:
+    f = str(fp or "").replace(":", "").replace(" ", "").lower()
+    if f.startswith("sha256"):
+        f = f[6:].lstrip("=")
+    if f and (len(f) != 64 or any(c not in "0123456789abcdef" for c in f)):
+        raise ValueError("Certificate fingerprint must be a SHA-256 hex digest (64 hex chars, colons allowed)")
+    return f
+
+
 class Client:
-    def __init__(self, host, port, use_ssl=False, timeout=15):
+    def __init__(self, host, port, use_ssl=False, timeout=15, cert_fp=""):
         self.host, self.port, self.ssl, self.timeout = host, int(port), use_ssl, timeout
+        self.cert_fp = norm_fingerprint(cert_fp)
         self.id = 0
 
     async def __aenter__(self):
         ctx = None
         if self.ssl:
-            ctx = ssl.create_default_context(); ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
-        self.r, self.w = await asyncio.wait_for(asyncio.open_connection(self.host, self.port, ssl=ctx), self.timeout)
+            ctx = ssl.create_default_context()
+            if self.cert_fp:  # pinned (e.g. self-signed electrs cert): verify by exact SHA-256 below instead of CA chain
+                ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE
+        self.r, self.w = await asyncio.wait_for(asyncio.open_connection(
+            self.host, self.port, ssl=ctx, server_hostname=self.host if ctx else None), self.timeout)
+        if ctx and self.cert_fp:
+            der = self.w.get_extra_info("ssl_object").getpeercert(binary_form=True)
+            if not der or hashlib.sha256(der).hexdigest() != self.cert_fp:
+                self.w.close()
+                raise ssl.SSLError("Electrum server certificate does not match the pinned fingerprint")
         await self.call("server.version", ["satoshi-btc-dashboard", "1.4"])
         return self
 
@@ -91,7 +132,7 @@ class Client:
         return [res[r["id"]] for r in reqs]
 
 
-async def scan(xpub, host, port, use_ssl=False, gap=25, override="auto"):
+async def scan(xpub, host, port, use_ssl=False, gap=25, override="auto", cert_fp=""):
     """Gap-limit scan of receive (0) and change (1) chains. Returns balance in BTC + used addresses."""
     total_conf = total_unconf = 0
     used = []
@@ -103,7 +144,7 @@ async def scan(xpub, host, port, use_ssl=False, gap=25, override="auto"):
         parse_xpub(xpub, override)
         chains, derive_fn = (0, 1), (lambda chain, i, n: derive(xpub, chain, i, n, override))
     gap = max(int(gap), 20)
-    async with Client(host, port, use_ssl) as c:
+    async with Client(host, port, use_ssl, cert_fp=cert_fp) as c:
         for chain in chains:
             idx, empty = 0, 0
             while empty < gap:

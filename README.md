@@ -21,8 +21,10 @@ app/                            # FastAPI backend + static frontend (Chart.js ve
   strike.py     Strike API (GET /balances, GET /rates/ticker) + daily-job logic
   electrum.py   xpub/ypub/zpub derivation (embit) + Electrum protocol client, gap-limit scan
   descriptor.py watch-only output descriptors (multisig, BIP-380 checksum, BIP-389 multipath, BIP-67) + wallet-export parsing
+  wallets.py    wallet records (name, description, Multisig/Single-sig label), type auto-detect, 1.0.0/1.0.1 migration
+  security.py   proxy-peer guard, CSRF check, Fernet encryption of the Strike key (key file in /data)
   prices.py     spot price (CoinGecko, Kraken fallback) + daily history (Kraken OHLC / CoinGecko), cached in SQLite
-tests/          pytest: matching rules, tax bands, importers, Strike job, BIP84 vector, descriptor vectors (Core/BIP-380/67/389), Electrum scan vs fake server
+tests/          pytest: matching rules, tax bands, importers, Strike job, BIP84 vector, descriptor vectors (Core/BIP-380/67/389), Electrum scan vs fake server, API security (no key material in any GET, CSRF, proxy-only, Electrum lock, migration)
 examples/       sample CSVs in each exchange format (EXAMPLE data)
 ```
 
@@ -30,7 +32,7 @@ examples/       sample CSVs in each exchange format (EXAMPLE data)
 - App source + CI: https://github.com/umbreladam/btc-dashboard
 - Community app store (paste this into Umbrel): https://github.com/umbreladam/umbrel-app-store
 - Image: `ghcr.io/umbreladam/btc-dashboard` (multi-arch linux/amd64 + linux/arm64, built by GitHub Actions)
-- Current release: `ghcr.io/umbreladam/btc-dashboard:1.0.1@sha256:a018c784d595e6d9828827cb66294578d540e5ed6427c6d0d33a1cc616b56498`
+- Current release: see `image:` in `satoshi-btc-dashboard/docker-compose.yml`
 
 ## Add the community app store to Umbrel
 1. On Umbrel, open **App Store → ⋯ (top right) → Community App Stores**.
@@ -73,7 +75,7 @@ With only those two permissions the key is read-only and **cannot move funds**. 
 When you later import the Strike CSV, delete the overlapping `strike-api` rows (filter by source) so buys aren't counted twice.
 
 ### Cold storage (xpub or multisig descriptor, watch-only)
-*Settings → Cold storage*: add one or more wallets, each with a label (e.g. a 2-of-3 multisig vault plus a single-sig wallet). For each, paste one of:
+*Settings → Cold storage*: add one or more wallets. Each has a **name**, optional **description**, and a **type label** (*Multisig* or *Single-sig*), auto-detected from the key material (`multi`/`sortedmulti` descriptors are Multisig and show m-of-n; xpubs and single-key descriptors are Single-sig). You can override the label. **Edit** changes the name, description or label at any time without re-entering keys. Key material is **write-only**: after saving, no endpoint returns it (the list shows only name, type, policy, script type and key fingerprints). To change keys, remove the wallet and add it again. Pick the **input method** (xpub/ypub/zpub, or descriptor/wallet export) and paste one of:
 - a single-sig **xpub / ypub / zpub** (script type auto-detected from the prefix, or choose one, including Taproot);
 - an **output descriptor** (needed for **multisig**: an xpub alone can't describe a multisig wallet). Supported: `wsh(sortedmulti(...))`, `wsh(multi(...))`, `sh(wsh(sortedmulti/multi(...)))`, `sh(sortedmulti/multi(...))`, plus single-sig `wpkh(...)`, `sh(wpkh(...))`, `pkh(...)`, `tr(KEY)`. Keys may carry origins (`[fingerprint/48h/0h/0h/2h]xpub...`) and be xpub/Ypub/Zpub/tpub/Vpub-style; use `/0/*` (change `/1/*` is then inferred) or multipath `/<0;1>/*` (BIP-389). A trailing `#checksum` is verified (BIP-380); without one the descriptor is still accepted;
 - or a pasted **wallet export**: Sparrow / Specter / Nunchuk (BSMS) / Bitcoin Core JSON or text containing a descriptor, **Caravan** JSON (quorum + extendedPublicKeys), an **Electrum** multisig wallet file (`wallet_type: "2of3"`, `x1/`...), or a **Coldcard**-style config (`Policy: 2 of 3`, `Format: P2WSH`, `Derivation:`, `XFP: xpub` lines). Key lists are assumed to be `sortedmulti` (what all these coordinators use). If an export isn't recognised, paste the descriptor.
@@ -88,8 +90,9 @@ Where to find the descriptor:
 Click **Show first addresses** (works before saving, and per saved wallet; shows receive `0/i` and change `1/i`) and check they match your wallet (e.g. Sparrow's *Addresses* tab), then **Scan now**. Receive and change chains are scanned with a gap limit (default 25, min 20), per wallet; the total and a per-wallet breakdown are shown.
 - **Watch-only.** Descriptors and xpubs contain only public keys: they can't spend. The app never builds, signs or exports transactions or PSBTs, and rejects private keys (xprv) if pasted. But they are **privacy-sensitive**: anyone with them can see all your addresses, balances and history. Treat them like a bank statement.
 - They are stored only in SQLite in `/data` and used only to derive addresses locally. Only script hashes are sent, and only to your Electrum server. They are never sent to any third party. Prices come from public endpoints with no account data.
-- Umbrel default Electrs: `APP_ELECTRS_NODE_IP=10.21.21.10`, `APP_ELECTRS_NODE_PORT=50001` (from getumbrel/umbrel-apps `electrs/exports.sh`), injected automatically as the default host/port. Plain TCP, no SSL.
-- A 1.0.0 single xpub carries over as a wallet called "Cold storage".
+- **Electrum server is locked to your Umbrel's Electrs**: `APP_ELECTRS_NODE_IP` / `APP_ELECTRS_NODE_PORT` (from getumbrel/umbrel-apps `electrs/exports.sh`, normally `10.21.21.10:50001`, plain TCP on the internal Docker network). A different server is possible only under *Advanced: use a different Electrum server* by typing the confirmation `this reveals my addresses`, because that server learns every address and balance. Hosts are validated (hostname/IP only). With **SSL** on, certificates are verified against the system CAs with hostname checking. For a self-signed server, paste its certificate's SHA-256 fingerprint to **pin** it (the exact certificate is then required). A custom host saved in 1.0.1 is reset to Umbrel's Electrs.
+- 1.0.0 single xpubs and 1.0.1 wallets (`label`) are migrated automatically on first start of 1.0.2. A 1.0.0 xpub becomes "Cold storage".
+- **Dashboard → Wallets** lists every wallet: Strike (exchange row, live API balance or ledger), each cold wallet, and exchange/other holdings derived from your transactions (Coinbase, Kraken, other). Each row shows name, type badge, description, BTC, GBP/USD value, % of total and when it was last scanned, with a total row. The *Holdings by wallet* donut uses the same split.
 - Once scanned, the live cold balance (and live Strike balance) replace the ledger figures in the "Total BTC held" split. If they differ from your transaction records, a warning shows the gap.
 
 ## Tax method (UK)
@@ -101,7 +104,7 @@ Click **Show first addresses** (works before saving, and per saved wallet; shows
 
 ## Updates
 Data lives in `${APP_DATA_DIR}/data` (mounted at `/data`) and survives updates and reinstalls of the image.
-To release: build and push a new tag (e.g. `1.0.1`), update `image:` in `docker-compose.yml`, bump `version:` and `releaseNotes` in `umbrel-app.yml`, and push to the store repo. Umbrel then shows an **Update** button.
+To release, follow *How to release an update* above.
 
 ## Local development
 ```bash
@@ -110,6 +113,21 @@ python -m pytest -q
 DATA_DIR=./devdata uvicorn app.main:app --port 8765    # http://localhost:8765
 pip install playwright && python screenshot.py           # screenshots/ (uses /usr/bin/google-chrome)
 ```
-Env: `DATA_DIR`, `ELECTRUM_HOST`, `ELECTRUM_PORT`, `LOAD_EXAMPLE_DATA=0` to start empty.
+Env: `DATA_DIR`, `APP_ELECTRS_NODE_IP`, `APP_ELECTRS_NODE_PORT`, `LOAD_EXAMPLE_DATA=0` to start empty, `TRUSTED_PROXY_IPS=127.0.0.1` for local development (see below).
 
-Security: the app relies on Umbrel's `app_proxy` login. Don't expose the port directly to the internet.
+## Security model
+No separate app password: access control is **Umbrel's login** (app_proxy / umbrelOS app gateway, including 2FA).
+
+**Proxy-only backend.** The web container listens on `0.0.0.0:8080` on `umbrel_main_network`, which every app shares. I checked the current Umbrel source (getumbrel/umbrel `packages/umbreld/source/modules/app-gateway/app-gateway.ts` and the umbrel-apps packaging guide). The proxy supports only `APP_HOST`, `APP_PORT`, `APP_PROTOCOL`, `PROXY_AUTH_ADD`, `PROXY_AUTH_WHITELIST`, `PROXY_AUTH_BLACKLIST`, `PROXY_TRUST_UPSTREAM` and `PROXY_TIMEOUT`. It **cannot inject a custom or secret header**, and it strips its own session cookie before forwarding. So a shared-secret header isn't possible. The strongest available check is the **TCP peer address**. On umbrelOS 2.x the gateway runs in `umbreld` on the host and connects from the host side of the Docker bridge, which is this container's default gateway (normally `10.21.0.1`, read from `/proc/net/route` at startup). The backend answers only that address and loopback (for the container healthcheck); everything else gets `403`. `TRUSTED_PROXY_IPS` replaces the auto-detection. On legacy umbrelOS 1.x, which ran an `app_proxy` container, set `APP_PROXY_HOST` to its container name so its IP is trusted.
+
+Limits, honestly:
+- This protects against **other containers** on the Umbrel network calling the API directly. It does **not** protect against code running **on the Umbrel host itself** or in a `network_mode: host` container: their traffic also arrives from the bridge gateway address. Anyone with root/SSH on the Umbrel can read `/data` anyway.
+- It relies on Docker not NATing container-to-container traffic (the default for a user-defined bridge). A container that can spoof source IPs (`CAP_NET_RAW`/`NET_ADMIN` on the same bridge) could forge the gateway address for request-only attacks.
+- If the owner turns off **"Require Umbrel login"** for this app, or whitelists paths, the gateway forwards unauthenticated requests and the backend can't tell. Keep it on.
+- The app cannot see *who* logged in, only that the request came through the gateway.
+
+**CSRF.** Every `POST`/`PUT`/`DELETE` needs `Content-Type: application/json` **and** the `X-Satoshi-Request: 1` header, and any `Origin` must match the host. CSV import sends the file as JSON text (no multipart). Cross-site forms can't set custom headers, and the app never answers CORS preflights.
+
+**Secrets and files.** `os.umask(0o077)` at startup, so the SQLite DB and journals are `0600` and the data dir is `0700`. The Strike key is encrypted at rest (Fernet) with an app-scoped key in `/data/app-secret.key` (`0600`). This protects DB copies and backups that don't include the key file. It does not protect against someone who can read the whole `/data` volume. The Strike key and all xpubs/descriptors are write-only: no endpoint returns them, and error messages never echo input. FastAPI `/docs`, `/redoc` and `/openapi.json` are disabled.
+
+**Prices.** *Settings → Data → Disable external price fetches* stops all CoinGecko/Kraken requests. The spot price then comes from Strike's ticker if a key is saved, otherwise from the last cached daily close.
