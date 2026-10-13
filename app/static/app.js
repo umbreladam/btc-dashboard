@@ -169,7 +169,12 @@ $("#f-import").onsubmit = async e => {
     const fd = new FormData(e.target), file = fd.get("file");
     if (!file || !file.size) throw new Error("Choose a CSV file");
     if (file.size > 20e6) throw new Error("File too large (max 20 MB)");
-    const p = await post("api/import/preview", {source: fd.get("source"), filename: file.name, text: await file.text()}); pending = p;
+    const isPdf = /\.pdf$/i.test(file.name) || file.type === "application/pdf";
+    const b64 = buf => { let s = "", b = new Uint8Array(buf); for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s); };
+    $("#preview").innerHTML = '<p class="sub">Reading file…</p>';
+    const body = {source: fd.get("source"), filename: file.name};
+    if (isPdf) body.pdf_b64 = b64(await file.arrayBuffer()); else body.text = await file.text();
+    const p = await post("api/import/preview", body); pending = p;
     const s = p.stats;
     $("#preview").innerHTML = `<h4>Preview — detected <b>${p.source}</b></h4>
       <p>${s.rows} rows: ${s.buys} buys, ${s.sells} sells, ${s.transfers} transfers · <b>${s.duplicates}</b> duplicates will be skipped</p>

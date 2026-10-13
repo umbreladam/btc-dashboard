@@ -77,35 +77,52 @@ def parse_coinbase(text):
             if asset not in BTC_ASSETS:
                 continue
             typ = (_get(r, "Transaction Type") or "").lower()
-            qty = abs(_num(_get(r, "Quantity Transacted")))
-            ccy = (_get(r, "Price Currency", "Spot Price Currency") or "GBP").upper()
-            total = abs(_num(_get(r, "Total (inclusive of fees", "Total")))
-            sub = abs(_num(_get(r, "Subtotal")))
-            fee = abs(_num(_get(r, "Fees and/or Spread", "Fees")))
-            t = dict(ts=_date(_get(r, "Timestamp")), source="coinbase", wallet="coinbase", btc=qty,
-                     ext_id=_get(r, "ID"), note=_get(r, "Notes"))
-            if "buy" in typ or typ in ("receive", "rewards income", "learning reward", "staking income") or "convert" in typ:
-                if typ in ("receive",):
-                    t.update(kind="transfer", wallet="other", to_wallet="coinbase", note=(t["note"] or "") + " (incoming)")
-                else:
-                    t.update(kind="buy", gbp=total or sub + fee, fee_gbp=fee)
-                    if "convert" in typ:
-                        t["note"] = (t["note"] or "") + " [convert: check]"
-                    if "reward" in typ or "income" in typ:
-                        t["note"] = (t["note"] or "") + " [income: cost = market value]"
-            elif "sell" in typ:
-                t.update(kind="sell", gbp=(sub - fee) if sub else total, fee_gbp=fee)
-            elif typ in ("send", "withdrawal"):
-                t.update(kind="transfer", to_wallet="cold")
-            else:
-                errs.append(f"line {i}: skipped unknown type '{typ}'")
+            t, err = coinbase_row(typ, abs(_num(_get(r, "Quantity Transacted"))),
+                                  (_get(r, "Price Currency", "Spot Price Currency") or "GBP").upper(),
+                                  abs(_num(_get(r, "Subtotal"))), abs(_num(_get(r, "Total (inclusive of fees", "Total"))),
+                                  _get(r, "Notes"), _date(_get(r, "Timestamp")), _get(r, "ID"),
+                                  _num(_get(r, "Fees and/or Spread", "Fees")) if _get(r, "Fees and/or Spread", "Fees") else None)
+            if err:
+                errs.append(f"line {i}: {err}")
                 continue
-            if ccy != "GBP" and t["kind"] in ("buy", "sell"):
-                t["note"] = (t.get("note") or "") + f" [WARNING: priced in {ccy}, not GBP]"
             rows.append(t)
         except Exception as e:
             errs.append(f"line {i}: {e}")
     return rows, errs
+
+
+def coinbase_row(typ, qty, ccy, sub, total, notes, ts, ext_id=None, fee=None):
+    """Map one Coinbase transaction-history row (CSV or PDF report) to a tx dict. Returns (tx, error)."""
+    typ = (typ or "").lower().strip()
+    notes = notes or ""
+    if fee is None:
+        fee = abs(total - sub) if sub and total else 0.0
+    fee = abs(fee)
+    t = dict(ts=ts, source="coinbase", wallet="coinbase", btc=qty, ext_id=ext_id, note=notes)
+    conv_out = "convert" in typ and re.match(r"\s*Converted [\d.eE-]+ BTC to", notes)
+    if conv_out:   # BTC -> altcoin: a disposal of BTC at market value
+        t.update(kind="sell", gbp=total or sub, fee_gbp=0.0, note=notes + " [convert to altcoin = disposal]")
+    elif typ == "receive":
+        t.update(kind="transfer", wallet="other", to_wallet="coinbase", note=notes + " (incoming)")
+    elif "buy" in typ or typ in ("rewards income", "learning reward", "staking income", "inflation reward") or "convert" in typ:
+        t.update(kind="buy", gbp=total or sub + fee, fee_gbp=fee)
+        if "convert" in typ:
+            t["note"] += " [convert: check]"
+        if "reward" in typ or "income" in typ:
+            t["note"] += " [income: cost = market value]"
+    elif "sell" in typ:
+        t.update(kind="sell", gbp=(sub - fee) if sub else total, fee_gbp=fee)
+    elif typ in ("send", "withdrawal"):
+        t.update(kind="transfer", to_wallet="cold")
+    else:
+        return None, f"skipped unknown type '{typ}'"
+    if ccy != "GBP" and t["kind"] in ("buy", "sell"):
+        t["note"] += f" [WARNING: priced in {ccy}, not GBP]"
+    m = re.search(r"on (BTC-[A-Z]+)$", notes.strip())
+    if m and m.group(1) != "BTC-GBP" and t["kind"] in ("buy", "sell"):
+        t["note"] += f" [traded on {m.group(1)}: GBP value is Coinbase's conversion]"
+    t["note"] = t["note"].strip()
+    return t, None
 
 
 # ---------------- Kraken ----------------

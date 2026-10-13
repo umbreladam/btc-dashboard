@@ -75,6 +75,8 @@ def dedupe_key(t: dict) -> str:
         base = f"{t['source']}|{t['ext_id']}"
     else:
         base = f"{t['source']}|{t['ts'][:19]}|{t['kind']}|{round(t['btc'], 8)}"
+        if (t.get("occurrence") or 1) > 1:   # identical id-less rows in one file (e.g. two fills in the same second)
+            base += f"#{t['occurrence']}"
     return hashlib.sha256(base.encode()).hexdigest()[:32]
 
 

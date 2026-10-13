@@ -47,8 +47,8 @@
   <div class="panel"><div class="ph"><h3>Transactions</h3><button id="btn-add" class="primary">+ Add transaction</button></div>
     <div class="filters">
       <select id="f-kind"><option value="">All types</option><option>buy</option><option>sell</option><option>transfer</option></select>
-      <select id="f-source"><option value="">All sources</option><option>strike</option><option>strike-api</option><option>coinbase</option><option>kraken</option><option>manual</option></select>
-      <select id="f-wallet"><option value="">All wallets</option><option>strike</option><option>coinbase</option><option>kraken</option><option>cold</option><option>other</option></select>
+      <select id="f-source"><option value="">All sources</option><option>strike</option><option>strike-api</option><option>coinbase</option><option>coinbase-pro</option><option>coincorner</option><option>kraken</option><option>manual</option></select>
+      <select id="f-wallet"><option value="">All wallets</option><option>strike</option><option>coinbase</option><option>coincorner</option><option>kraken</option><option>cold</option><option>other</option></select>
       <input type="date" id="f-start"><input type="date" id="f-end"><input id="f-q" placeholder="Search notes/ID">
     </div>
     <div class="sub" id="tx-stats"></div>
@@ -69,11 +69,11 @@
 </section>
 
 <section id="page-import" class="hidden">
-  <div class="panel"><div class="ph"><h3>Import CSV export</h3></div>
-    <p class="sub">Supported: <b>Coinbase</b> transaction history CSV, <b>Kraken</b> ledgers.csv or trades.csv, <b>Strike</b> account statement CSV. Files are processed only on this device. Duplicates are detected and skipped.</p>
+  <div class="panel"><div class="ph"><h3>Import exchange statements (PDF or CSV)</h3></div>
+    <p class="sub">Supported: <b>Coinbase</b> transaction report (PDF) or transaction history CSV, <b>Coinbase Pro</b> fills and account statements (PDF or fills.csv / account.csv), <b>CoinCorner</b> GBP account statement (PDF or CSV), <b>Kraken</b> ledgers.csv or trades.csv, <b>Strike</b> account statement CSV. Only BTC rows are imported (altcoins are ignored); deposits/withdrawals are transfers, not disposals. Files are processed only on this device. You'll see a preview first, and duplicates (including the same trade from a PDF and a CSV) are skipped.</p>
     <form id="f-import" class="form">
-      <label>Source<select name="source"><option value="auto">Auto-detect</option><option value="coinbase">Coinbase</option><option value="kraken">Kraken</option><option value="strike">Strike</option></select></label>
-      <label class="wide">CSV file<input type="file" name="file" accept=".csv,text/csv" required></label>
+      <label>Source<select name="source"><option value="auto">Auto-detect</option><option value="coinbase">Coinbase</option><option value="kraken">Kraken</option><option value="strike">Strike</option><option value="coinbase-pro-fills">Coinbase Pro fills</option><option value="coinbase-pro-account">Coinbase Pro account statement</option><option value="coincorner">CoinCorner</option></select></label>
+      <label class="wide">Statement file (PDF or CSV)<input type="file" name="file" accept=".csv,text/csv,.pdf,application/pdf" required></label>
       <button class="primary">Preview</button>
     </form>
     <div id="preview"></div></div>

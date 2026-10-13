@@ -4,7 +4,7 @@ name: Satoshi BTC Dashboard
 tagline: Private Bitcoin-only portfolio tracker with UK CGT
 icon: https://raw.githubusercontent.com/umbreladam/umbrel-app-store/main/satoshi-btc-dashboard/icon.svg
 category: bitcoin
-version: "1.0.5"
+version: "1.0.6"
 port: 8765
 description: >-
   A self-hosted, Bitcoin-only portfolio dashboard. Track BTC held on Strike, exchanges and
@@ -30,7 +30,7 @@ gallery:
   - https://raw.githubusercontent.com/umbreladam/umbrel-app-store/main/satoshi-btc-dashboard/gallery/3.jpg
   - https://raw.githubusercontent.com/umbreladam/umbrel-app-store/main/satoshi-btc-dashboard/gallery/4.jpg
 releaseNotes: >-
-  Tidier DCA settings: only shows the schedule fields for your chosen frequency.
+  Import Coinbase, Coinbase Pro and CoinCorner statements (PDF and CSV) with preview (Kraken and Strike CSV as before).
 dependencies:
   - electrs
 path: ""

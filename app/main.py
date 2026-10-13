@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
-from . import descriptor, schedule, db, importers, portfolio, prices, strike, electrum, example, security, wallets
+from . import statements, descriptor, schedule, db, importers, portfolio, prices, strike, electrum, example, security, wallets
 
 os.umask(0o077)  # every file this process creates (DB, WAL, key file) is owner-only
 LDN = ZoneInfo("Europe/London")
@@ -270,7 +270,8 @@ def api_del(tid: int):
 
 
 class ImportIn(BaseModel):
-    text: str
+    text: str = ""
+    pdf_b64: str = ""     # PDF statements are sent base64-encoded (still JSON, so the CSRF checks apply)
     source: str = "auto"
     filename: str = ""
 
@@ -278,17 +279,35 @@ class ImportIn(BaseModel):
 @app.post("/api/import/preview")
 def api_preview(p: ImportIn):
     """CSV is sent as JSON text (not multipart) so every write request carries the JSON + CSRF-header checks."""
-    text = p.text.lstrip("\ufeff")
-    if len(text) > 20_000_000:
+    if len(p.text) > 20_000_000 or len(p.pdf_b64) > 28_000_000:
         raise HTTPException(413, "File too large")
-    src = importers.detect(text) if p.source == "auto" else p.source
-    if src not in importers.PARSERS:
-        raise HTTPException(400, "Could not detect export type - choose Coinbase, Kraken or Strike")
-    rows, errs = importers.PARSERS[src](text)
+    if p.pdf_b64:
+        try:
+            src, rows, errs = statements.parse_pdf_b64(p.pdf_b64, p.source)
+        except ValueError as e:
+            raise HTTPException(400, str(e))
+        except Exception:
+            raise HTTPException(400, "Could not read this PDF")
+    else:
+        text = p.text.lstrip("\ufeff")
+        parsers = {**importers.PARSERS, **statements.CSV_PARSERS}
+        src = (importers.detect(text) or statements.detect_csv(text)) if p.source == "auto" else p.source
+        if src not in parsers:
+            raise HTTPException(400, "Could not detect export type - choose the exchange and statement type")
+        rows, errs = parsers[src](text)
     with db.conn() as c:
+        occ = {}
         for r in rows:
+            sig = (r["source"], r["ts"][:19], r["kind"], round(r["btc"], 8))
+            if not r.get("ext_id"):
+                occ[sig] = r["occurrence"] = occ.get(sig, 0) + 1
             r["dedupe"] = db.dedupe_key(r)
-            r["duplicate"] = c.execute("SELECT 1 FROM tx WHERE dedupe=?", (r["dedupe"],)).fetchone() is not None
+            # duplicate if this id was imported before, or the same trade already came in via the other format
+            # (PDF vs CSV): the n-th identical id-less row is a duplicate only if the DB already has n such rows
+            same = c.execute("SELECT count(*) FROM tx WHERE source=? AND substr(ts,1,19)=? AND kind=? AND abs(btc-?)<5e-9",
+                             (r["source"], r["ts"][:19], r["kind"], r["btc"])).fetchone()[0]
+            r["duplicate"] = (c.execute("SELECT 1 FROM tx WHERE dedupe=?", (r["dedupe"],)).fetchone() is not None
+                              or same >= (r.get("occurrence") or 1))
             r["warning"] = "WARNING" in (r.get("note") or "")
     return {"source": src, "rows": rows, "errors": errs,
             "stats": {"rows": len(rows), "duplicates": sum(r["duplicate"] for r in rows),
