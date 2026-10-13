@@ -238,9 +238,18 @@ def parse_strike(text):
                 t.update(kind="sell", btc=abs(btc), gbp=abs(gbp) - fee_gbp, fee_gbp=fee_gbp)
             elif btc < 0:
                 t.update(kind="transfer", to_wallet="cold", btc=abs(btc), fee_btc=fee_btc,
-                         note=(t["note"] or "") + f" {_get(r, 'Destination') or ''}".strip())
+                         note=((t["note"] or "") + " " + (_get(r, "Destination") or "")[:16]).strip())
+            elif "credit" in typ or "reward" in typ or "referral" in typ:
+                # Strike credits (rewards/refunds/promotions) carry no GBP price: counted as BTC in with no cost
+                t.update(kind="transfer", wallet="other", to_wallet="strike", btc=btc,
+                         note=(t["note"] or "") + " [WARNING: Strike credit (reward/refund?) - no cost recorded, check]")
             else:
-                t.update(kind="transfer", wallet="other", to_wallet="strike", btc=btc)
+                src = _get(r, "Destination") or ""
+                via = " via Lightning" if src.lower().startswith("lnbc") else " on-chain" if src.lower().startswith(("bc1", "1", "3")) else ""
+                t.update(kind="transfer", wallet="other", to_wallet="strike", btc=btc,
+                         note=((t["note"] or "") + f" Received{via} (incoming, not a purchase)").strip())
+            if fee_btc and t["kind"] == "buy":
+                t["note"] = ((t["note"] or "") + f" [fee {fee_btc:.8f} BTC]").strip()
             rows.append(t)
         except Exception as e:
             errs.append(f"line {i}: {e}")
