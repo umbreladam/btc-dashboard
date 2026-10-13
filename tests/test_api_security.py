@@ -178,7 +178,7 @@ def test_migrate_101_and_100():
     ws, changed = wallets.migrate(s)
     assert changed and [w["name"] for w in ws] == ["2-of-3 vault", "Old", "Cold storage"]
     assert [w["type"] for w in map(wallets.public_view, ws)] == ["Multisig", "Single-sig", "Single-sig"]
-    assert ws[0]["id"] == "ab12" and all(w["schema"] == 2 for w in ws)
+    assert ws[0]["id"] == "ab12" and all(w["schema"] == wallets.SCHEMA for w in ws)
     again, changed2 = wallets.migrate({"cold_wallets": ws})
     assert not changed2 and again == ws
 
@@ -189,7 +189,7 @@ def test_migration_on_startup_and_file_modes(tmp_path):
     main.init_storage()
     with db.conn() as cn:
         s = db.get_settings(cn)
-    assert s["xpub"] == "" and s["cold_wallets"][0]["name"] == "Cold storage" and s["cold_wallets"][0]["schema"] == 2
+    assert s["xpub"] == "" and s["cold_wallets"][0]["name"] == "Cold storage" and s["cold_wallets"][0]["schema"] == wallets.SCHEMA
     assert s["strike_api_key"].startswith("enc:") and main.strike_key(s) == FAKE_STRIKE
     assert stat.S_IMODE(os.stat(db.DB_PATH).st_mode) == 0o600
     assert stat.S_IMODE(os.stat(os.path.join(db.DATA_DIR, "app-secret.key")).st_mode) == 0o600

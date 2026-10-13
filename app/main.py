@@ -79,7 +79,9 @@ async def scheduler():
                 with db.conn() as c:
                     await asyncio.to_thread(prices.refresh_history, c, date(2021, 1, 1))
                     db.set_settings(c, {"prices_day": now.date().isoformat()})
-            if cold_wallets(s) and electrum_target(s) and asyncio.get_event_loop().time() - last_cold > 1800:
+            since = asyncio.get_event_loop().time() - last_cold
+            # every 30 min, or soon after a wallet change cleared the cached balance (e.g. new address type)
+            if cold_wallets(s) and electrum_target(s) and (since > 1800 or (s.get("cold_balance_cache") is None and since > 60)):
                 last_cold = asyncio.get_event_loop().time()
                 try:
                     await cold_scan()
@@ -173,8 +175,11 @@ async def cold_scan():
     gap = max(int(s["gap_limit"]), 20)
     now = datetime.now(timezone.utc).isoformat()
     res = {"confirmed": 0.0, "unconfirmed": 0.0, "balance": 0.0, "used_addresses": [], "wallets": []}
+    detected = {}
     for w in ws:
-        r = await electrum.scan(w["spec"], tgt[0], tgt[1], tgt[2], gap, w.get("script", "auto"), cert_fp=tgt[3])
+        r = await electrum.scan(w["spec"], tgt[0], tgt[1], tgt[2], gap,
+                                wallets.address_type(w) if w.get("input") == "xpub" else "auto", cert_fp=tgt[3])
+        detected[w["id"]] = r.get("script_types") or []
         for k in ("confirmed", "unconfirmed", "balance"):
             res[k] += r[k]
         res["used_addresses"] += [dict(a, wallet=w["name"]) for a in r["used_addresses"]]
@@ -183,6 +188,12 @@ async def cold_scan():
     for k in ("confirmed", "unconfirmed", "balance"):
         res[k] = round(res[k], 8)
     with db.conn() as c:
+        # remember which single-sig address types had history (re-read: the user may have edited wallets meanwhile)
+        cur = cold_wallets(db.get_settings(c))
+        for w in cur:
+            if w.get("input") == "xpub" and w["id"] in detected and wallets.address_type(w) == "auto":
+                w["detected_scripts"] = detected[w["id"]]
+        db.set_settings(c, {"cold_wallets": cur, "xpub": ""})
         db.set_settings(c, {"cold_balance_cache": {"btc": res["balance"], "at": now,
                                                    "addresses": len(res["used_addresses"]), "wallets": res["wallets"]}})
         db.log(c, "cold", f"balance {res['balance']:.8f} BTC across {len(res['used_addresses'])} used addresses in "
@@ -420,6 +431,7 @@ class WalletEdit(BaseModel):
     name: str | None = None
     description: str | None = None
     type: str | None = None  # "auto" resets to detected
+    address_type: str | None = None  # single-sig xpub only: "auto" | p2wpkh | p2sh-p2wpkh | p2pkh | p2tr
 
 
 def _bad():
@@ -484,7 +496,20 @@ def api_wallet_edit(wid: str, e: WalletEdit):
                         w["type_override"] = wallets.check_type(e.type)
                     except ValueError as x:
                         raise HTTPException(400, str(x))
-                db.set_settings(c, {"cold_wallets": ws, "xpub": ""})
+                reset = False
+                if e.address_type is not None:
+                    if w.get("input") != "xpub":
+                        raise HTTPException(400, "Address type only applies to single-sig xpub wallets (a descriptor defines it)")
+                    try:
+                        at = wallets.check_script(e.address_type)
+                    except ValueError as x:
+                        raise HTTPException(400, str(x))
+                    if at != wallets.address_type(w):
+                        w["script"], w["script_type"], w["detected_scripts"], reset = at, at, [], True
+                upd = {"cold_wallets": ws, "xpub": ""}
+                if reset:   # balance is re-scanned with the new type on the next refresh
+                    upd["cold_balance_cache"] = None
+                db.set_settings(c, upd)
                 return {"ok": True, "wallet": wallets.public_view(w)}
     raise HTTPException(404, "Unknown wallet")
 
@@ -505,7 +530,8 @@ def api_wallet_addresses(wid: str, n: int = 5):
     for w in cold_wallets(s):
         if w["id"] == wid:
             try:
-                return wallet_addresses(w["spec"], w.get("script", "auto"), max(1, min(n, 50)))
+                return wallet_addresses(w["spec"], wallets.effective_script(w) if w.get("input") == "xpub" else "auto",
+                                        max(1, min(n, 50)))
             except Exception:
                 raise _bad()
     raise HTTPException(404, "Unknown wallet")

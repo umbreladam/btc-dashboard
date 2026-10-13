@@ -8,16 +8,28 @@ from embit import bip32, script
 from embit.networks import NETWORKS
 
 # SLIP-132 version bytes -> script type
+# Default address type per SLIP-132 prefix when nothing has been detected yet. Plain xpub/tpub don't say which type
+# the wallet uses (modern wallets export xpub for native SegWit too), so they default to p2wpkh, not legacy p2pkh.
 VERSIONS = {
-    "xpub": "p2pkh", "ypub": "p2sh-p2wpkh", "zpub": "p2wpkh",
-    "tpub": "p2pkh", "upub": "p2sh-p2wpkh", "vpub": "p2wpkh",
+    "xpub": "p2wpkh", "ypub": "p2sh-p2wpkh", "zpub": "p2wpkh",
+    "tpub": "p2wpkh", "upub": "p2sh-p2wpkh", "vpub": "p2wpkh",
 }
+# Single-sig address types probed by auto-detection (p2tr = BIP86 key-path only, no script tree).
+SCRIPT_TYPES = ("p2wpkh", "p2sh-p2wpkh", "p2pkh", "p2tr")
+SCRIPT_LABELS = {"p2wpkh": "Native SegWit (bc1q)", "p2sh-p2wpkh": "Nested SegWit (3...)", "p2pkh": "Legacy (1...)",
+                 "p2tr": "Taproot (bc1p)"}
+
+
+def default_script(x: str) -> str:
+    return VERSIONS.get(x.strip()[:4], "p2wpkh")
 
 
 def parse_xpub(x: str, override: str = "auto"):
     x = x.strip()
     k = bip32.HDKey.from_string(x)
-    stype = VERSIONS.get(x[:4], "p2wpkh") if override in ("", "auto") else override
+    if override not in ("", "auto", None) and override not in SCRIPT_TYPES:
+        raise ValueError("unknown address type")
+    stype = VERSIONS.get(x[:4], "p2wpkh") if override in ("", "auto", None) else override
     net = NETWORKS["test"] if x[0] in "tuv" else NETWORKS["main"]
     return k, stype, net
 
@@ -132,35 +144,66 @@ class Client:
         return [res[r["id"]] for r in reqs]
 
 
-async def scan(xpub, host, port, use_ssl=False, gap=25, override="auto", cert_fp=""):
-    """Gap-limit scan of receive (0) and change (1) chains. Returns balance in BTC + used addresses."""
-    total_conf = total_unconf = 0
+async def _gap_scan(c, chains, derive_fn, gap):
+    conf = unconf = 0
     used = []
+    for chain in chains:
+        idx, empty = 0, 0
+        while empty < gap:
+            addrs = derive_fn(chain, idx, gap)
+            hist = await c.batch([("blockchain.scripthash.get_history", [a[2]]) for a in addrs])
+            bals = await c.batch([("blockchain.scripthash.get_balance", [a[2]]) for a in addrs])
+            for (path, addr, _), h, b in zip(addrs, hist, bals):
+                if h:
+                    empty = 0
+                    conf += b["confirmed"]; unconf += b["unconfirmed"]
+                    used.append({"path": path, "address": addr, "txs": len(h),
+                                 "balance": (b["confirmed"] + b["unconfirmed"]) / 1e8})
+                else:
+                    empty += 1
+                    if empty >= gap:
+                        break
+            idx += gap
+    return conf, unconf, used
+
+
+async def detect_scripts(c, xpub, n=20):
+    """Which single-sig address types have on-chain history? Checks the first n receive + change addresses of each
+    type in one batch (script hashes only, to the configured Electrum server)."""
+    probes = []
+    for st in SCRIPT_TYPES:
+        for chain in (0, 1):
+            probes += [(st, a[2]) for a in derive(xpub, chain, 0, n, st)]
+    hist = await c.batch([("blockchain.scripthash.get_history", [sh]) for _, sh in probes])
+    return [st for st in SCRIPT_TYPES if any(h for (s, _), h in zip(probes, hist) if s == st)]
+
+
+async def scan(xpub, host, port, use_ssl=False, gap=25, override="auto", cert_fp=""):
+    """Gap-limit scan of receive (0) and change (1) chains. Returns balance in BTC + used addresses.
+
+    Single-sig extended key with override "auto": every address type in SCRIPT_TYPES that has history in its first
+    `gap` receive/change addresses is scanned and the balances are SUMMED (a wallet can have used more than one type,
+    e.g. legacy then SegWit). If none has history the prefix default is reported (p2wpkh for xpub) with zero balance.
+    `script_types` in the result lists the types found (the first is the primary one shown in the UI)."""
+    gap = max(int(gap), 20)
     if is_descriptor(xpub):
         from .descriptor import from_input
         d = from_input(xpub)  # parse once
-        chains, derive_fn = d.chains(), (lambda chain, i, n: d.derive(chain, i, n))
+        async with Client(host, port, use_ssl, cert_fp=cert_fp) as c:
+            conf, unconf, used = await _gap_scan(c, d.chains(), lambda chain, i, n: d.derive(chain, i, n), gap)
+        types = []
     else:
         parse_xpub(xpub, override)
-        chains, derive_fn = (0, 1), (lambda chain, i, n: derive(xpub, chain, i, n, override))
-    gap = max(int(gap), 20)
-    async with Client(host, port, use_ssl, cert_fp=cert_fp) as c:
-        for chain in chains:
-            idx, empty = 0, 0
-            while empty < gap:
-                addrs = derive_fn(chain, idx, gap)
-                hist = await c.batch([("blockchain.scripthash.get_history", [a[2]]) for a in addrs])
-                bals = await c.batch([("blockchain.scripthash.get_balance", [a[2]]) for a in addrs])
-                for (path, addr, _), h, b in zip(addrs, hist, bals):
-                    if h:
-                        empty = 0
-                        total_conf += b["confirmed"]; total_unconf += b["unconfirmed"]
-                        used.append({"path": path, "address": addr, "txs": len(h),
-                                     "balance": (b["confirmed"] + b["unconfirmed"]) / 1e8})
-                    else:
-                        empty += 1
-                        if empty >= gap:
-                            break
-                idx += gap
-    return {"confirmed": total_conf / 1e8, "unconfirmed": total_unconf / 1e8,
-            "balance": (total_conf + total_unconf) / 1e8, "used_addresses": used}
+        conf = unconf = 0
+        used = []
+        async with Client(host, port, use_ssl, cert_fp=cert_fp) as c:
+            types = await detect_scripts(c, xpub, gap) if override in ("", "auto", None) else [override]
+            for st in types:
+                a, b, u = await _gap_scan(c, (0, 1), lambda chain, i, n, st=st: derive(xpub, chain, i, n, st), gap)
+                conf += a; unconf += b
+                used += [dict(x, script=st) for x in u]
+        if len(types) > 1:   # primary = the type holding the most funds (then most used addresses)
+            types.sort(key=lambda st: (-sum(x["balance"] for x in used if x["script"] == st),
+                                       -sum(x["script"] == st for x in used), SCRIPT_TYPES.index(st)))
+    return {"confirmed": conf / 1e8, "unconfirmed": unconf / 1e8, "balance": (conf + unconf) / 1e8,
+            "used_addresses": used, "script_types": types}

@@ -250,20 +250,27 @@ act("#btn-scan", async () => { $("#scan-out").textContent = "Scanning via Electr
   $("#scan-out").innerHTML = `<span class="ok">Balance ${btc(r.balance)} BTC</span> (${btc(r.unconfirmed)} unconfirmed) across ${r.used_addresses.length} used addresses` + (r.wallets || []).map(w => `<br>${esc(w.name)}: ${btc(w.balance)} BTC (${w.used} used addresses)`).join(""); });
 const esc = t => String(t ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
 const addrList = r => r.map(a => `${a.chain} ${esc(a.path)} <code>${esc(a.address)}</code>`).join("<br>");
+const ADDR_TYPES = [["auto", "Auto-detect (recommended)"], ["p2wpkh", "Native SegWit (bc1q…)"], ["p2sh-p2wpkh", "Nested SegWit (3…)"], ["p2pkh", "Legacy (1…)"], ["p2tr", "Taproot (bc1p…)"]];
+const ADDR_LABEL = Object.fromEntries(ADDR_TYPES);
 const descSumm = s => [s.policy, s.script_type, s.network, s.fingerprints && s.fingerprints.length ? "fingerprints " + s.fingerprints.join(", ") : "", s.checksum_verified ? "checksum OK" : "", s.change_chain_inferred ? "change chain /1/* inferred" : ""].filter(Boolean).map(esc).join(" · ");
 async function loadWallets() {
   const ws = await api("api/cold/wallets"); const el = $("#cold-wallets");
   el.innerHTML = ws.length ? ws.map(w => `<div class="cw" data-id="${esc(w.id)}"><b>${esc(w.name)}</b> <span class="badge ${esc(w.type)}">${esc(w.type)}</span>${w.type_overridden ? ' <span class="sub">(set manually; detected ' + esc(w.detected_type) + ')</span>' : ""}
     <div class="sub">${esc(w.description || "")}</div><div class="sub">${descSumm(w)} · ${w.input === "descriptor" ? "descriptor" : "xpub"}${w.balance != null ? " · " + btc(w.balance) + " BTC" : ""}${w.scanned_at ? " · scanned " + ukTime(w.scanned_at) : ""}</div>
+    ${w.first_receive ? `<div class="sub">First receive address: <code>${esc(w.first_receive)}</code> <span class="sub">(check it matches your wallet app)</span></div>` : ""}
+    ${w.detected_scripts && w.detected_scripts.length > 1 ? `<div class="sub">History found in ${w.detected_scripts.length} address types (${w.detected_scripts.map(x => esc(ADDR_LABEL[x] || x)).join(", ")}): balances are added together.</div>` : ""}
     <div class="btns" style="margin-top:6px"><button type="button" data-edit>Edit</button><button type="button" data-addr>Show first addresses</button><button type="button" class="danger" data-del>Remove</button></div>
     <div class="edit"><input data-f="name" maxlength="60" value="${esc(w.name)}" aria-label="Name"><input data-f="description" maxlength="200" value="${esc(w.description || "")}" placeholder="Description" aria-label="Description">
       <select data-f="type" aria-label="Type label"><option value="auto">Auto (${esc(w.detected_type)})</option><option ${w.type_overridden && w.type === "Multisig" ? "selected" : ""}>Multisig</option><option ${w.type_overridden && w.type === "Single-sig" ? "selected" : ""}>Single-sig</option></select>
+      ${w.input === "xpub" ? `<label class="sub">Address type <select data-f="address_type" aria-label="Address type">${ADDR_TYPES.map(([v, l]) => `<option value="${v}" ${(w.address_type || "auto") === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>` : ""}
       <button type="button" class="primary" data-save>Save</button></div></div>`).join("") : "No cold-storage wallets yet.";
   el.querySelectorAll(".cw").forEach(row => {
     const id = row.dataset.id;
     row.querySelector("[data-edit]").onclick = () => row.classList.toggle("editing");
     row.querySelector("[data-save]").onclick = async () => { try { const g = k => row.querySelector(`[data-f=${k}]`).value;
-      await post(`api/cold/wallets/${id}`, {name: g("name"), description: g("description"), type: g("type")}, "PUT"); loadWallets(); } catch (e) { alert(e.message); } };
+      const body = {name: g("name"), description: g("description"), type: g("type")};
+      if (row.querySelector("[data-f=address_type]")) body.address_type = g("address_type");
+      await post(`api/cold/wallets/${id}`, body, "PUT"); loadWallets(); } catch (e) { alert(e.message); } };
     row.querySelector("[data-addr]").onclick = async () => { try { const r = await api(`api/cold/wallets/${id}/addresses?n=5`); $("#scan-out").innerHTML = "Verify these match your wallet:<br>" + addrList(r); } catch (e) { alert(e.message); } };
     row.querySelector("[data-del]").onclick = async () => { if (!confirm("Remove this cold-storage wallet from the app?")) return; await api(`api/cold/wallets/${id}`, {method: "DELETE"}); loadWallets(); };
   });

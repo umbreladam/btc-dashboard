@@ -3,13 +3,15 @@
 A stored wallet looks like:
   {id, name, description, input: "xpub"|"descriptor", spec (KEY MATERIAL, never returned by the API),
    script, detected_type: "Multisig"|"Single-sig", policy: "2-of-3"|"single-sig", fingerprints: [...],
-   script_type, type_override: None|"Multisig"|"Single-sig"}
+   script_type, type_override: None|"Multisig"|"Single-sig",
+   script: "auto"|p2wpkh|p2sh-p2wpkh|p2pkh|p2tr (single-sig address type; "auto" = detect from on-chain history),
+   detected_scripts: [...] (single-sig types found with history by the last scan, primary first)}
 """
 import re, secrets
 from . import descriptor, electrum
 
 TYPES = ("Multisig", "Single-sig")
-SCHEMA = 2
+SCHEMA = 3   # 3 (1.0.8): single-sig xpub wallets get address-type auto-detection
 
 
 def detect(spec: str, script: str = "auto") -> dict:
@@ -29,7 +31,7 @@ def detect(spec: str, script: str = "auto") -> dict:
         if k.is_private:
             raise ValueError("private key")
         return {"input": "xpub", "spec": spec.strip(), "detected_type": "Single-sig", "policy": "single-sig",
-                "m": 1, "n": 1, "fingerprints": [], "script_type": stype,
+                "m": 1, "n": 1, "fingerprints": [], "script_type": stype if script not in ("", "auto", None) else "auto",
                 "network": "testnet" if spec.strip()[0] in "tuv" else "mainnet",
                 "checksum_verified": False, "change_chain_inferred": False}
     except Exception:
@@ -37,13 +39,53 @@ def detect(spec: str, script: str = "auto") -> dict:
                          "only PUBLIC keys (xpub/ypub/zpub or a descriptor), then try again.") from None
 
 
+def address_type(w: dict) -> str:
+    """User setting for a single-sig xpub wallet: "auto" or one of electrum.SCRIPT_TYPES."""
+    s = w.get("script") or "auto"
+    return s if s in electrum.SCRIPT_TYPES else "auto"
+
+
+def effective_script(w: dict) -> str:
+    """Address type used to show addresses: the setting, else the primary detected type, else the prefix default."""
+    s = address_type(w)
+    if s != "auto":
+        return s
+    return (w.get("detected_scripts") or [None])[0] or electrum.default_script(w.get("spec", ""))
+
+
+def first_receive(w: dict):
+    try:
+        if w.get("input") == "xpub":
+            return electrum.derive(w["spec"], 0, 0, 1, effective_script(w))[0][1]
+        if w.get("input") == "descriptor":
+            return electrum.derive(w["spec"], 0, 0, 1)[0][1]
+    except Exception:
+        return None
+    return None
+
+
 def public_view(w: dict) -> dict:
-    """Everything safe to show: never the spec."""
+    """Everything safe to show: never the spec. (The first receive address is shown so the user can check it against
+    their wallet app; it is only returned to the UI, never logged.)"""
     t = w.get("type_override") or w.get("detected_type") or "Single-sig"
-    return {"id": w["id"], "name": w["name"], "description": w.get("description", ""), "type": t,
-            "detected_type": w.get("detected_type"), "type_overridden": bool(w.get("type_override")),
-            "policy": w.get("policy"), "input": w.get("input"), "script_type": w.get("script_type"),
-            "fingerprints": w.get("fingerprints", []), "network": w.get("network")}
+    v = {"id": w["id"], "name": w["name"], "description": w.get("description", ""), "type": t,
+         "detected_type": w.get("detected_type"), "type_overridden": bool(w.get("type_override")),
+         "policy": w.get("policy"), "input": w.get("input"), "script_type": w.get("script_type"),
+         "fingerprints": w.get("fingerprints", []), "network": w.get("network"), "first_receive": first_receive(w)}
+    if w.get("input") == "xpub":
+        ds = [s for s in (w.get("detected_scripts") or []) if s in electrum.SCRIPT_TYPES]
+        v.update(address_type=address_type(w), detected_scripts=ds, effective_script=effective_script(w),
+                 script_type=(electrum.SCRIPT_LABELS[effective_script(w)] +
+                              (" (auto-detected)" if address_type(w) == "auto" and ds else
+                               " (auto: nothing found yet, default)" if address_type(w) == "auto" else " (set manually)")))
+    return v
+
+
+def check_script(s):
+    s = (s or "auto").strip()
+    if s != "auto" and s not in electrum.SCRIPT_TYPES:
+        raise ValueError("Address type must be auto, p2wpkh, p2sh-p2wpkh, p2pkh or p2tr")
+    return s
 
 
 def make(name, description, spec, script="auto", type_override=None, existing=0) -> dict:
@@ -72,6 +114,15 @@ def migrate(s: dict) -> tuple[list, bool]:
     out, changed = [], False
     for w in s.get("cold_wallets") or []:
         if w.get("schema") == SCHEMA:
+            out.append(w); continue
+        if w.get("schema") == 2:
+            # 1.0.8: plain-xpub wallets were scanned as legacy p2pkh unless an address type was chosen.
+            # Anything without an explicit choice becomes "auto" so its next scan finds the right type.
+            changed = True
+            w = dict(w, schema=SCHEMA)
+            if w.get("input") == "xpub":
+                if w.get("script") in (None, "", "auto"):
+                    w["script"], w["script_type"], w["detected_scripts"] = "auto", "auto", []
             out.append(w); continue
         changed = True
         nw = {"id": w.get("id") or secrets.token_hex(4), "name": clean(w.get("label") or w.get("name"), 60) or "Cold storage",
