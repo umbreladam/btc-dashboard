@@ -186,3 +186,23 @@ def test_scan_multisig_descriptor_via_fake_electrum():
     assert round(r["balance"], 8) == 0.00073 and {a["path"] for a in r["used_addresses"]} == {"0/2", "1/0"}
     # only script hashes go to the server, never keys/descriptors
     assert not any("pub" in s or "sortedmulti" in s for s in seen)
+
+
+def test_bip389_multipath_with_checksum():
+    """wsh(sortedmulti(2,[fp/48h/0h/0h/2h]xpub/<0;1>/*,...))#checksum, as exported by Sparrow/Nunchuk/Core.
+    Keys are the public BIP-32 test-vector xpubs above; fingerprints are made up."""
+    body = (f"wsh(sortedmulti(2,[aaaaaaaa/48h/0h/0h/2h]{A}/<0;1>/*,"
+            f"[bbbbbbbb/48h/0h/0h/2h]{B}/<0;1>/*,[cccccccc/48h/0h/0h/2h]{C}/<0;1>/*))")
+    cs = checksum(body)
+    d = Descriptor(f"{body}#{cs}")
+    assert d.had_checksum and d.chains() == [0, 1]
+    rcv = Descriptor(f"wsh(sortedmulti(2,{A}/0/*,{B}/0/*,{C}/0/*))")
+    chg = Descriptor(f"wsh(sortedmulti(2,{A}/1/*,{B}/1/*,{C}/1/*))")
+    assert d.derive(0, 0, 3) == rcv.derive(0, 0, 3)                          # receive chain = /0/*
+    assert [x[1] for x in d.derive(1, 0, 3)] == [x[1] for x in chg.derive(0, 0, 3)]   # change chain = /1/*
+    bad = cs[:-1] + ("q" if cs[-1] != "q" else "p")
+    with pytest.raises(ValueError, match="checksum"):
+        Descriptor(f"{body}#{bad}")
+    from app import wallets
+    info = wallets.detect(f"{body}#{cs}")
+    assert info["policy"] == "2-of-3" and info["checksum_verified"] and info["detected_type"] == "Multisig"
