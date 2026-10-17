@@ -95,6 +95,24 @@ Click **Show first addresses** (works before saving, and per saved wallet; shows
 - **Dashboard → Wallets** lists every wallet: Strike (exchange row, live API balance or ledger), each cold wallet, and exchange/other holdings derived from your transactions (Coinbase, Kraken, other). Each row shows name, type badge, description, BTC, GBP/USD value, % of total and when it was last scanned, with a total row. The *Holdings by wallet* donut uses the same split.
 - Once scanned, the live cold balance (and live Strike balance) replace the ledger figures in the "Total BTC held" split. If they differ from your transaction records, a warning shows the gap.
 
+## Satoshi native CSV import format
+
+One CSV for any source and every transaction type (auto-detected on Import, or pick "Satoshi native CSV"):
+
+```
+timestamp_utc,type,btc,gbp,fee_gbp,fee_btc,wallet,to_wallet,source,ext_id,note,estimate
+2024-01-05T10:00:00Z,buy,0.01000000,400.00,2.00,,coinbase,,coinbase,abc123,DCA,
+```
+
+- `timestamp_utc` ISO 8601 UTC; `btc` always positive; `gbp` = cost incl. fees (acquisitions) or net proceeds / market value (disposals).
+- `type`:
+  - `buy`, `income`, `acquisition`: acquisitions at the `gbp` value (income/received coins use their GBP value at receipt).
+  - `sell`, `spend`, `gift`, `disposal`, `fee`: CGT disposals at `gbp` (market value for spends/gifts/fees).
+  - `transfer`: between your own wallets (`wallet` → `to_wallet`, default `cold`); `fee_btc` is the network fee (leaves the pool, cost kept).
+  - `lost`: BTC removed from holdings but not a disposal; per HMRC the cost stays in the Section 104 pool.
+- `wallet`/`to_wallet`/`source`: lowercase names (a-z, 0-9, space, `_`, `-`, max 32). `ext_id` makes re-imports idempotent.
+- `estimate`: `1`/`true`/`yes` marks estimated rows. The original type is shown in the Transactions list.
+
 ## Tax method (UK)
 - Disposals are matched **same-day → next 30 days (B&B, earliest first) → Section 104 pool**, using UK-local dates. Same-day matching across all days is done before any 30-day matching.
 - Cost basis shown = Section 104 pool cost. Fees are added to cost and deducted from proceeds.

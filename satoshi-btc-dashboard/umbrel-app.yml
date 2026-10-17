@@ -4,7 +4,7 @@ name: Satoshi BTC Dashboard
 tagline: Private Bitcoin-only portfolio tracker with UK CGT
 icon: https://raw.githubusercontent.com/umbreladam/umbrel-app-store/main/satoshi-btc-dashboard/icon.svg
 category: bitcoin
-version: "1.0.8"
+version: "1.0.9"
 port: 8765
 description: >-
   A self-hosted, Bitcoin-only portfolio dashboard. Track BTC held on Strike, exchanges and
@@ -30,7 +30,7 @@ gallery:
   - https://raw.githubusercontent.com/umbreladam/umbrel-app-store/main/satoshi-btc-dashboard/gallery/3.jpg
   - https://raw.githubusercontent.com/umbreladam/umbrel-app-store/main/satoshi-btc-dashboard/gallery/4.jpg
 releaseNotes: >-
-  Single-sig wallets: automatic address-type detection (fixes zero balances for xpub wallets) and editable address type.
+  New Satoshi native CSV import (all transaction types: buy, income, acquisition, sell, spend, gift, disposal, fee, transfer, lost) with type labels in the Transactions list. Fixes Strike CSV buys double-counting the fee in the cost.
 dependencies:
   - electrs
 path: ""

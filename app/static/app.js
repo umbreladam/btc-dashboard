@@ -135,8 +135,11 @@ document.querySelectorAll(".seg button").forEach(b => b.onclick = () => {
 
 // ---------- transactions ----------
 const txHead = () => `<tr><th>Date (UK)</th><th>Type</th><th>Source</th><th>Wallet</th><th class="r">BTC</th><th class="r">GBP</th><th class="r">Price £/BTC</th><th>Note</th><th></th></tr>`;
-const txRow = t => `<tr><td>${ukTime(t.ts)}</td><td><span class="tag ${t.kind}">${t.kind}</span>${t.estimate ? '<span class="tag est">estimate</span>' : ""}${t.example ? '<span class="tag ex">example</span>' : ""}</td>
-  <td>${t.source}</td><td>${t.wallet}${t.to_wallet ? " → " + t.to_wallet : ""}</td><td class="r">${btc(t.btc)}</td>
+const NATIVE_TYPES = ["buy", "income", "acquisition", "sell", "spend", "gift", "disposal", "fee", "transfer", "lost"];
+const txType = t => { const m = /\[([a-z]+)\]\s*$/.exec(t.note || ""); return m && NATIVE_TYPES.includes(m[1]) ? m[1] : (t.kind === "transfer" && t.to_wallet === "lost" ? "lost" : t.kind); };
+const txBtc = t => txType(t) === "lost" && !t.btc ? t.fee_btc : t.btc;
+const txRow = t => `<tr><td>${ukTime(t.ts)}</td><td><span class="tag ${t.kind} t-${txType(t)}" title="${t.kind}">${txType(t)}</span>${t.estimate ? '<span class="tag est">estimate</span>' : ""}${t.example ? '<span class="tag ex">example</span>' : ""}</td>
+  <td>${t.source}</td><td>${t.wallet}${t.to_wallet ? " → " + t.to_wallet : ""}</td><td class="r">${btc(txBtc(t))}</td>
   <td class="r">${t.kind === "transfer" ? "" : gbp(t.gbp, 2)}</td><td class="r">${t.kind === "transfer" || !t.btc ? "" : gbp(t.gbp / t.btc)}</td>
   <td class="sub">${(t.note || "").replace(/</g, "&lt;")}</td><td>${t.id ? `<button class="del" data-id="${t.id}" title="Delete">✕</button>` : ""}</td></tr>`;
 

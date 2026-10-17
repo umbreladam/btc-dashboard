@@ -233,7 +233,7 @@ def parse_strike(text):
                     usd = _num(_get(r, "Amount USD"))
                     t["note"] = (t["note"] or "") + f" [WARNING: no GBP amount (USD {usd}) - fix cost]"
                     gbp = abs(usd)
-                t.update(kind="buy", btc=btc, gbp=abs(gbp) + fee_gbp, fee_gbp=fee_gbp)
+                t.update(kind="buy", btc=btc, gbp=abs(gbp), fee_gbp=fee_gbp)   # Amount GBP already includes the fee
             elif btc < 0 and ("trade" in typ or "sell" in typ or "exchange" in typ) and gbp:
                 t.update(kind="sell", btc=abs(btc), gbp=abs(gbp) - fee_gbp, fee_gbp=fee_gbp)
             elif btc < 0:
@@ -256,11 +256,54 @@ def parse_strike(text):
     return rows, errs
 
 
-PARSERS = {"coinbase": parse_coinbase, "kraken": parse_kraken, "strike": parse_strike}
+# ---------------- Satoshi native CSV (any source, all transaction types) ----------------
+NATIVE_KINDS = {"buy": "buy", "income": "buy", "acquisition": "buy", "sell": "sell", "spend": "sell", "gift": "sell",
+                "disposal": "sell", "fee": "sell", "transfer": "transfer", "lost": "transfer"}
+WALLET_RE = re.compile(r"^[a-z0-9][a-z0-9 _-]{0,31}$")
+
+
+def parse_native(text):
+    """Columns: timestamp_utc, type, btc, gbp, fee_gbp, fee_btc, wallet, to_wallet, source, ext_id, note[, estimate].
+    type: buy | income | acquisition (-> buy at gbp) ; sell | spend | gift | disposal | fee (-> sell, gbp = net proceeds /
+    market value) ; transfer (own wallets, fee_btc = network fee) ; lost (not a disposal: removes btc from the pool, cost kept)."""
+    body = _find_header(text, ["timestamputc", "type", "btc", "wallet", "source", "extid"])
+    if body is None:
+        return [], ["Not a Satoshi native CSV (timestamp_utc,type,btc,gbp,fee_gbp,fee_btc,wallet,to_wallet,source,ext_id,note)"]
+    rows, errs = [], []
+    for i, r in enumerate(csv.DictReader(io.StringIO(body)), start=2):
+        try:
+            typ = (_get(r, "type") or "").strip().lower()
+            if typ not in NATIVE_KINDS:
+                errs.append(f"line {i}: unknown type '{typ}'"); continue
+            btc, fee_btc = abs(_num(_get(r, "btc"))), abs(_num(_get(r, "fee_btc")))
+            wallet = (_get(r, "wallet") or "other").strip().lower()
+            to_w = (_get(r, "to_wallet") or "").strip().lower() or None
+            src = (_get(r, "source") or "manual").strip().lower()
+            if not all(WALLET_RE.match(x) for x in [wallet, src] + ([to_w] if to_w else [])):
+                errs.append(f"line {i}: bad wallet/source name"); continue
+            t = dict(ts=_date(_get(r, "timestamp_utc")), kind=NATIVE_KINDS[typ], source=src, wallet=wallet, btc=btc,
+                     gbp=abs(_num(_get(r, "gbp"))), fee_gbp=abs(_num(_get(r, "fee_gbp"))), fee_btc=0.0,
+                     ext_id=_get(r, "ext_id"), estimate=1 if str(_get(r, "estimate") or "").strip() in ("1", "true", "yes") else 0,
+                     note=((_get(r, "note") or "") + f" [{typ}]").strip())
+            if typ == "lost":   # BTC gone without a disposal: modelled as a transfer whose whole amount is burnt
+                t.update(btc=0.0, fee_btc=btc, to_wallet="lost")
+            elif t["kind"] == "transfer":
+                t.update(to_wallet=to_w or "cold", fee_btc=fee_btc)
+            if btc <= 0:
+                errs.append(f"line {i}: btc must be > 0"); continue
+            rows.append(t)
+        except Exception as e:
+            errs.append(f"line {i}: {e}")
+    return rows, errs
+
+
+PARSERS = {"coinbase": parse_coinbase, "kraken": parse_kraken, "strike": parse_strike, "native": parse_native}
 
 
 def detect(text):
     h = _norm(text[:3000])
+    if "timestamputc" in h and "extid" in h and "towallet" in h:
+        return "native"
     if "refid" in h or ("pair" in h and "ordertxid" in h):
         return "kraken"
     if "quantitytransacted" in h:

@@ -34,7 +34,7 @@ def wallets(txs):
         elif t["kind"] == "transfer":
             w[t["wallet"]] -= t["btc"] + (t["fee_btc"] or 0)
             w[t["to_wallet"] or "other"] += t["btc"]
-    return {k: round(v, 8) for k, v in w.items()}
+    return {k: round(v, 8) for k, v in w.items() if not (k == "lost" and abs(v) < 5e-9)}
 
 
 def tax_settings(s):

@@ -22,7 +22,7 @@ table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}th{c
 td{padding:8px;border-bottom:1px solid var(--line);white-space:nowrap}tr:hover td{background:#18202a}.tablewrap{overflow-x:auto;max-height:620px;overflow-y:auto}
 td.r,th.r{text-align:right}
 .kv td:first-child{color:var(--mut)}.kv td:last-child{text-align:right}.kv tr.total td{font-weight:700;color:var(--txt);border-top:2px solid var(--line)}
-.tag{font-size:11px;padding:2px 7px;border-radius:20px;background:var(--panel2);color:var(--mut);margin-right:4px}.tag.buy{color:var(--up)}.tag.sell{color:var(--down)}.tag.transfer{color:var(--blue)}.tag.est{background:#3a2a0a;color:#ffcf7a}.tag.ex{background:#2a2140;color:#b9a3ff}
+.tag{font-size:11px;padding:2px 7px;border-radius:20px;background:var(--panel2);color:var(--mut);margin-right:4px}.tag.buy{color:var(--up)}.tag.sell{color:var(--down)}.tag.transfer{color:var(--blue)}.tag.t-lost{color:var(--down);font-style:italic}.tag.est{background:#3a2a0a;color:#ffcf7a}.tag.ex{background:#2a2140;color:#b9a3ff}
 .filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
 input,select{background:var(--panel2);border:1px solid var(--line);color:var(--txt);padding:8px 10px;border-radius:8px;font:inherit;width:100%}
 .filters input,.filters select{width:auto}
