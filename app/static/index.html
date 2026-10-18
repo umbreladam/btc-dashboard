@@ -154,7 +154,7 @@
       <div class="sub wide" id="scan-out"><b>Watch-only.</b> Saved keys are write-only: they are never shown again by this app. A descriptor/xpub holds only public keys: it cannot spend, and this app never builds or signs transactions. It is still privacy-sensitive (it reveals all your addresses and balances), so it is stored only in this app's /data volume and is never sent anywhere: addresses are derived locally and only script hashes go to the Electrum server above (your own Electrs).</div>
     </div></div>
     <div class="panel"><div class="ph"><h3>Data</h3></div><div class="form">
-      <label class="wide"><span><input name="disable_external_prices" type="checkbox" value="true"> Disable external price fetches (no CoinGecko/Kraken requests; uses Strike's rate if a key is saved, otherwise the last cached price)</span></label>
+      <label class="wide"><span><input name="disable_external_prices" type="checkbox" value="true"> Disable external price fetches (no CoinGecko/Kraken/Coinbase Exchange price requests; uses Strike's rate if a key is saved, otherwise the last cached price)</span></label>
       <div class="btns wide"><button type="button" id="btn-prices">Refresh price history</button><button type="button" id="btn-ex-load">Load example data</button><button type="button" id="btn-ex-del" class="danger">Delete example data</button></div>
       <div class="wide"><h4>Job log</h4><div id="log" class="log"></div></div>
     </div></div>

@@ -23,7 +23,7 @@ app/                            # FastAPI backend + static frontend (Chart.js ve
   descriptor.py watch-only output descriptors (multisig, BIP-380 checksum, BIP-389 multipath, BIP-67) + wallet-export parsing
   wallets.py    wallet records (name, description, Multisig/Single-sig label), type auto-detect, 1.0.0/1.0.1 migration
   security.py   proxy-peer guard, CSRF check, Fernet encryption of the Strike key (key file in /data)
-  prices.py     spot price (CoinGecko, Kraken fallback) + daily history (Kraken OHLC / CoinGecko), cached in SQLite
+  prices.py     spot price (CoinGecko, Kraken fallback) + daily history (Kraken OHLC / CoinGecko; older days back to your first transaction from Coinbase Exchange public daily candles), cached in SQLite
 tests/          pytest: matching rules, tax bands, importers, Strike job, BIP84 vector, descriptor vectors (Core/BIP-380/67/389), Electrum scan vs fake server, API security (no key material in any GET, CSRF, proxy-only, Electrum lock, migration)
 examples/       sample CSVs in each exchange format (EXAMPLE data)
 ```
@@ -148,4 +148,4 @@ Limits, honestly:
 
 **Secrets and files.** `os.umask(0o077)` at startup, so the SQLite DB and journals are `0600` and the data dir is `0700`. The Strike key is encrypted at rest (Fernet) with an app-scoped key in `/data/app-secret.key` (`0600`). This protects DB copies and backups that don't include the key file. It does not protect against someone who can read the whole `/data` volume. The Strike key and all xpubs/descriptors are write-only: no endpoint returns them, and error messages never echo input. FastAPI `/docs`, `/redoc` and `/openapi.json` are disabled.
 
-**Prices.** *Settings → Data → Disable external price fetches* stops all CoinGecko/Kraken requests. The spot price then comes from Strike's ticker if a key is saved, otherwise from the last cached daily close.
+**Prices.** *Settings → Data → Disable external price fetches* stops all CoinGecko/Kraken/Coinbase Exchange price requests. The spot price then comes from Strike's ticker if a key is saved, otherwise from the last cached daily close.

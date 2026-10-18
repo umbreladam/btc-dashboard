@@ -49,9 +49,72 @@ def _coingecko_daily(ccy, days=365):
     return {datetime.fromtimestamp(p[0] / 1000, timezone.utc).date().isoformat(): float(p[1]) for p in r.json()["prices"]}
 
 
+def _coinbase_daily(product, start: date, end: date):
+    """Daily closes from Coinbase Exchange's public candles API (no key; full history; max 300 candles per request)."""
+    out, d = {}, start
+    while d <= end:
+        e = min(d + timedelta(days=299), end)
+        r = httpx.get(f"https://api.exchange.coinbase.com/products/{product}/candles", timeout=20, headers=UA,
+                      params={"granularity": 86400, "start": f"{d.isoformat()}T00:00:00Z", "end": f"{e.isoformat()}T23:59:59Z"})
+        r.raise_for_status()
+        for cdl in r.json():   # [time, low, high, open, close, volume]
+            out[datetime.fromtimestamp(int(cdl[0]), timezone.utc).date().isoformat()] = float(cdl[4])
+        d = e + timedelta(days=1)
+    return out
+
+
+def missing_days(c, start: date, end: date):
+    have = {r[0] for r in c.execute("SELECT day FROM prices WHERE gbp IS NOT NULL AND gbp > 0 AND day >= ?",
+                                    (start.isoformat(),))}
+    out, d = [], start
+    while d <= end:
+        if d.isoformat() not in have:
+            out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
+def backfill_history(c, start: date):
+    """Kraken/CoinGecko only reach back ~720/365 days. Fill older gaps (back to the first transaction) from
+    Coinbase Exchange daily candles. Only missing days are requested, so after the first run this is a no-op."""
+    gaps = missing_days(c, start, datetime.now(timezone.utc).date() - timedelta(days=1))
+    if not gaps:
+        return 0
+    runs = [[gaps[0], gaps[0]]]   # contiguous gap runs, so one stray missing day doesn't refetch years of candles
+    for d in gaps[1:]:
+        if d - runs[-1][1] == timedelta(days=1):
+            runs[-1][1] = d
+        else:
+            runs.append([d, d])
+    g = {}
+    for a, b in runs:
+        try:
+            g.update(_coinbase_daily("BTC-GBP", a, b))
+        except Exception:
+            break
+    got = 0
+    for d in gaps:
+        p = g.get(d.isoformat())
+        if p:
+            c.execute("INSERT INTO prices(day,gbp,usd,synthetic) VALUES(?,?,NULL,0) ON CONFLICT(day) DO UPDATE SET "
+                      "gbp=excluded.gbp, synthetic=0 WHERE prices.gbp IS NULL OR prices.gbp <= 0", (d.isoformat(), p))
+            got += 1
+    return got
+
+
+def history_start(c, default=date(2021, 1, 1)):
+    """First day the daily price cache should cover: the earliest transaction (UK day; a day early for safety)."""
+    r = c.execute("SELECT min(ts) FROM tx").fetchone()
+    try:
+        return min(default, datetime.fromisoformat(r[0]).date() - timedelta(days=1)) if r and r[0] else default
+    except ValueError:
+        return default
+
+
 def refresh_history(c, start: date):
-    """Fill the price cache. CoinGecko free tier gives ~365 days, Kraken OHLC ~720 days.
-    Older days (e.g. early Coinbase buys) fall back to the buy prices recorded in your transactions."""
+    """Fill the price cache. CoinGecko free tier gives ~365 days, Kraken OHLC ~720 days; older days back to
+    `start` come from Coinbase Exchange daily candles. Days still missing fall back (in the chart) to the last
+    known market price or a non-dust buy price recorded in your transactions."""
     got = 0
     for fetch in (lambda: (_kraken_daily("XBTGBP"), _kraken_daily("XBTUSD")),
                   lambda: (_coingecko_daily("gbp"), _coingecko_daily("usd"))):
@@ -63,7 +126,7 @@ def refresh_history(c, start: date):
                 got += 1
         except Exception:
             continue
-    return got
+    return got + backfill_history(c, start)
 
 
 def history(c):

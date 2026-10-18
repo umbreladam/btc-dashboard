@@ -138,6 +138,16 @@ def wallet_rows(s, ledger, cold, strike_btc, total, pg, pu):
     return rows
 
 
+MIN_FALLBACK_BUY_GBP = 1.0
+
+
+def buy_price_usable(t):
+    """A buy's implied price (gbp/btc) is only a sane stand-in for a missing market close if the GBP amount isn't
+    pennies: dust buys (e.g. Coinbase round-ups of 0.0000002 BTC recorded as £0.00 or £0.01) imply £0 or
+    £40k+ per BTC and made the Value line collapse to zero / spike whenever they were the latest buy."""
+    return t["btc"] > 0 and (t["gbp"] or 0) >= MIN_FALLBACK_BUY_GBP
+
+
 def series(c):
     """Daily series: BTC held, pool cost basis, value (GBP)."""
     txs = load(c)
@@ -159,8 +169,8 @@ def series(c):
                 ev_so_far.append(cgt.Event(d, t["kind"] if t["kind"] != "transfer" else "fee",
                                            t["btc"] if t["kind"] != "transfer" else t["fee_btc"], t["gbp"]))
                 changed = True
-                if t["kind"] == "buy":
-                    last_price = t["gbp"] / t["btc"] if t["btc"] else last_price
+                if t["kind"] == "buy" and buy_price_usable(t):
+                    last_price = t["gbp"] / t["btc"]
             if t["kind"] == "buy":
                 btc += t["btc"]
             elif t["kind"] == "sell":
@@ -172,7 +182,7 @@ def series(c):
                 pool_cost = cgt.match(ev_so_far).pool_cost
             except ValueError:
                 pass
-        p = hist.get(d.isoformat(), (None, None))[0] or last_price
+        p = hist.get(d.isoformat(), (None, None))[0] or last_price   # no cached close: carry the last known price
         if p:
             last_price = p
         out.append({"day": d.isoformat(), "btc": round(btc, 8), "cost": round(pool_cost, 2),

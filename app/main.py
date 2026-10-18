@@ -1,5 +1,5 @@
 import asyncio, os, json, logging
-from datetime import datetime, timezone, date, timedelta
+from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
@@ -59,7 +59,7 @@ async def startup():
         s = db.get_settings(c)
         if os.environ.get("LOAD_EXAMPLE_DATA", "1") == "1" and not s.get("example_seeded"):
             if not s.get("disable_external_prices"):
-                prices.refresh_history(c, date(2021, 1, 1))
+                prices.refresh_history(c, prices.history_start(c))
             example.generate(c, {k: v[0] for k, v in prices.history(c).items()})
             db.set_settings(c, {"example_seeded": True})
     asyncio.create_task(scheduler())
@@ -77,7 +77,7 @@ async def scheduler():
                 await asyncio.to_thread(run_strike_job)
             if s.get("prices_day") != now.date().isoformat() and not s.get("disable_external_prices"):
                 with db.conn() as c:
-                    await asyncio.to_thread(prices.refresh_history, c, date(2021, 1, 1))
+                    await asyncio.to_thread(prices.refresh_history, c, prices.history_start(c))
                     db.set_settings(c, {"prices_day": now.date().isoformat()})
             since = asyncio.get_event_loop().time() - last_cold
             # every 30 min, or soon after a wallet change cleared the cached balance (e.g. new address type)
@@ -570,7 +570,7 @@ def api_prices():
     with db.conn() as c:
         if db.get_settings(c).get("disable_external_prices"):
             raise HTTPException(400, "External price fetches are disabled in Settings")
-        return {"days": prices.refresh_history(c, date(2021, 1, 1))}
+        return {"days": prices.refresh_history(c, prices.history_start(c))}
 
 
 @app.post("/api/example/load")
