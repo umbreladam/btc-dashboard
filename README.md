@@ -148,4 +148,6 @@ Limits, honestly:
 
 **Secrets and files.** `os.umask(0o077)` at startup, so the SQLite DB and journals are `0600` and the data dir is `0700`. The Strike key is encrypted at rest (Fernet) with an app-scoped key in `/data/app-secret.key` (`0600`). This protects DB copies and backups that don't include the key file. It does not protect against someone who can read the whole `/data` volume. The Strike key and all xpubs/descriptors are write-only: no endpoint returns them, and error messages never echo input. FastAPI `/docs`, `/redoc` and `/openapi.json` are disabled.
 
+**Privacy mode.** The eye icon in the header masks every absolute amount on screen (balances, values, cost basis, CGT, chart axes and tooltips) and every number inside free text: transaction notes, wallet descriptions, import preview issues, the job log and status messages, including Lightning invoice amounts. Dates, times, percentages, counts in the transaction summary, the market price and chart shapes stay visible. Amount fields in Settings are blurred until focused. Masking is display-only; stored data is unchanged.
+
 **Prices.** *Settings → Data → Disable external price fetches* stops all CoinGecko/Kraken/Coinbase Exchange price requests. The spot price then comes from Strike's ticker if a key is saved, otherwise from the last cached daily close.

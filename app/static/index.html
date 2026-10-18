@@ -83,13 +83,13 @@
   <form id="f-settings">
   <div class="grid2">
     <div class="panel"><div class="ph"><h3>UK tax (CGT)</h3></div><div class="form">
-      <label>Other taxable income this tax year (£)<input name="other_income" type="number" step="1"></label>
+      <label>Other taxable income this tax year (£)<input name="other_income" class="pmask" type="number" step="1"></label>
       <label>Personal allowance (£)<input name="personal_allowance" type="number"></label>
       <label>Basic-rate band (£)<input name="basic_band" type="number"></label>
       <label>CGT basic rate<input name="basic_rate" type="number" step="0.01"></label>
       <label>CGT higher rate<input name="higher_rate" type="number" step="0.01"></label>
       <label>Annual exempt amount (£)<input name="annual_exempt" type="number"></label>
-      <label>Exempt amount already used (£)<input name="exempt_used" type="number"></label>
+      <label>Exempt amount already used (£)<input name="exempt_used" class="pmask" type="number"></label>
       <label>Assumed selling fee (%)<input name="sell_fee_pct" type="number" step="0.01"></label>
     </div></div>
     <div class="panel"><div class="ph"><h3>Strike DCA (optional, read-only API key)</h3></div><div class="form">
@@ -103,7 +103,7 @@
       </ol><p class="sub">With only these two permissions the key is <b>read-only and cannot move, send or spend funds</b>. It is stored only in this app's local database on your Umbrel and is sent only to api.strike.me.</p></details>
       <label class="wide">API key <span class="sub" id="strike-key-state"></span><input name="strike_api_key" type="password" autocomplete="off" placeholder="paste read-only key (write-only, stored encrypted)"></label>
       <label class="wide"><span><input name="strike_api_key_clear" type="checkbox" value="true"> Remove saved key</span></label>
-      <label>DCA amount<input name="strike_daily_gbp" type="number" step="0.01" min="0"></label>
+      <label>DCA amount<input name="strike_daily_gbp" class="pmask" type="number" step="0.01" min="0"></label>
       <label>Currency<select name="strike_dca_currency"><option>GBP</option><option>USD</option><option>EUR</option></select></label>
       <label>Frequency<select id="dca-frequency"><option value="daily">Daily</option><option value="weekly">Weekly</option><option value="monthly">Monthly</option><option value="off">Off</option></select></label>
       <input type="hidden" name="strike_frequency"><input type="hidden" name="strike_job_enabled">

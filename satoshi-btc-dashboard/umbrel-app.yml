@@ -4,7 +4,7 @@ name: Satoshi BTC Dashboard
 tagline: Private Bitcoin-only portfolio tracker with UK CGT
 icon: https://raw.githubusercontent.com/umbreladam/umbrel-app-store/main/satoshi-btc-dashboard/icon.svg
 category: bitcoin
-version: "1.0.10"
+version: "1.0.11"
 port: 8765
 description: >-
   A self-hosted, Bitcoin-only portfolio dashboard. Track BTC held on Strike, exchanges and
@@ -30,7 +30,7 @@ gallery:
   - https://raw.githubusercontent.com/umbreladam/umbrel-app-store/main/satoshi-btc-dashboard/gallery/3.jpg
   - https://raw.githubusercontent.com/umbreladam/umbrel-app-store/main/satoshi-btc-dashboard/gallery/4.jpg
 releaseNotes: >-
-  Fixes choppy value chart: real daily prices back to your first transaction; dust buys no longer zero/spike the chart; adds Coinbase Exchange public prices, covered by Disable external price fetches.
+  Privacy mode now also hides amounts inside transaction notes and other details.
 dependencies:
   - electrs
 path: ""

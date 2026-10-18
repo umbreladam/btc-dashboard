@@ -54,3 +54,5 @@ input[type=checkbox]{width:auto;margin-right:6px;vertical-align:middle}
 .eye{background:none;border:1px solid var(--line);color:var(--mut);border-radius:8px;padding:5px 7px;cursor:pointer;display:inline-flex;align-items:center;min-width:36px;min-height:34px;justify-content:center}.eye:hover{color:var(--txt)}
 .eye .eye-off,html.priv .eye .eye-on{display:none}html.priv .eye .eye-off{display:inline}html.priv .eye{color:#f7931a;border-color:#f7931a}
 .seg button.intra.hidden{display:none}.rangenote{font-size:12px;color:var(--mut);margin-left:8px}
+/* privacy mode: blur amount inputs until focused (values untouched) */
+html.priv .pmask:not(:focus){filter:blur(5px)}

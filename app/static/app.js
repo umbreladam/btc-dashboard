@@ -10,6 +10,16 @@ const usd = v => PRIV ? "$" + MASK : usdRaw(v);
 const btc = v => PRIV ? MASK : (v || 0).toFixed(8);
 const btc4 = v => PRIV ? MASK + " ₿" : (+v).toFixed(4) + " ₿";
 const signed = v => PRIV ? "£" + MASK : (v >= 0 ? "+" : "") + gbpRaw(v);
+// Free text (notes, descriptions, messages): in privacy mode every number becomes **** (with any currency symbol /
+// unit kept as a word), except dates, times, percentages and "line N" references. Digits inside identifiers
+// (hex ids like 5a570b51...) are left alone. Display only: stored data is never changed.
+const NUM_RE = /(?<![A-Za-z0-9_])(?:(\d{4}-\d{2}-\d{2}(?:[T ]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?|\d{1,2}\/\d{1,2}\/\d{2,4}|\d{1,2}:\d{2}(?::\d{2})?(?![\d]|[.,]\d)|\d+(?:\.\d+)?\s?%|(?<=\bline )\d+)|([£$€]\s?)?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:[eE][-+]?\d+)?)(?=([A-Za-z]*))/g;
+const UNIT_RE = /^(?:k|m|bn|sats?|[A-Z]{2,6}|btc|gbp|usd|eur)?$/;
+// BOLT11 Lightning invoices carry the amount in their prefix (lnbc2500u1... = 2500 µBTC): mask those digits too.
+const LN_RE = /\b(ln(?:bc|tb|bcrt|sb))(\d+)(?=[munp]?1|\.\.\.|…)/gi;
+const maskText = t => { t = String(t ?? ""); return PRIV ? t.replace(LN_RE, "$1" + MASK).replace(NUM_RE, (m, keep, cur, after) =>
+  keep || !UNIT_RE.test(after) ? m : (cur ? cur.trim() : "") + MASK) : t; };
+const mesc = t => esc(maskText(t));   // mask, then HTML-escape
 function setPrivacy(on) {
   PRIV = !!on; document.documentElement.classList.toggle("priv", PRIV);
   try { localStorage.setItem("satoshi-privacy", PRIV ? "1" : "0"); } catch (e) {}
@@ -59,7 +69,7 @@ async function loadDash() {
   $("#c-pnl").textContent = signed(s.pnl_gbp); $("#c-pnl").className = "val " + cls;
   $("#c-pnlpct").innerHTML = `<span class="${cls}">${s.pnl_pct >= 0 ? "▲" : "▼"} ${s.pnl_pct.toFixed(2)}%</span>`;
   const t = s.cgt;
-  if (t.error) { $("#c-after").textContent = "—"; $("#c-cgt").textContent = t.error; }
+  if (t.error) { $("#c-after").textContent = "—"; $("#c-cgt").textContent = maskText(t.error); }
   else {
     $("#c-after").textContent = gbp(t.value_after_tax); $("#c-cgt").textContent = `CGT ${gbp(t.tax)} · tax year ${t.tax_year}`;
     $("#cgt-table").innerHTML = [
@@ -88,7 +98,7 @@ function drawWallets(s) {
   $("#wallets-panel").innerHTML = rows.map(r => `<div class="wrow">
     <div class="wn"><span class="dot" style="background:${r.color}"></span>${esc(r.name)} <span class="badge ${esc(r.type)}">${esc(r.type)}${r.policy && r.policy !== "single-sig" && r.type === "Multisig" ? " " + esc(r.policy) : ""}</span></div>
     <div class="wb">${btc(r.btc)} ₿</div>
-    <div class="wd">${esc(r.description || "")}<div class="wm">${r.pending ? "Not scanned yet" : r.scanned_at ? (r.source === "electrs" ? "Scanned " : "Updated ") + ago(r.scanned_at) : "From transaction ledger"}</div></div>
+    <div class="wd">${mesc(r.description)}<div class="wm">${r.pending ? "Not scanned yet" : r.scanned_at ? (r.source === "electrs" ? "Scanned " : "Updated ") + ago(r.scanned_at) : "From transaction ledger"}</div></div>
     <div class="wv">${gbp(r.gbp)} · ${usd(r.usd)}<br><b>${r.pct.toFixed(1)}%</b></div>
     <div class="pctbar"><i style="width:${Math.max(0, Math.min(100, r.pct))}%;background:${r.color}"></i></div></div>`).join("") +
     `<div class="wrow total"><div class="wn">Total (${rows.length} wallets)</div><div class="wb">${btc(s.holdings.total)} ₿</div><div class="wd"></div><div class="wv">${gbp(s.value.gbp)} · ${usd(s.value.usd)}<br><b>100%</b></div></div>`;
@@ -141,7 +151,7 @@ const txBtc = t => txType(t) === "lost" && !t.btc ? t.fee_btc : t.btc;
 const txRow = t => `<tr><td>${ukTime(t.ts)}</td><td><span class="tag ${t.kind} t-${txType(t)}" title="${t.kind}">${txType(t)}</span>${t.estimate ? '<span class="tag est">estimate</span>' : ""}${t.example ? '<span class="tag ex">example</span>' : ""}</td>
   <td>${t.source}</td><td>${t.wallet}${t.to_wallet ? " → " + t.to_wallet : ""}</td><td class="r">${btc(txBtc(t))}</td>
   <td class="r">${t.kind === "transfer" ? "" : gbp(t.gbp, 2)}</td><td class="r">${t.kind === "transfer" || !t.btc ? "" : gbp(t.gbp / t.btc)}</td>
-  <td class="sub">${(t.note || "").replace(/</g, "&lt;")}</td><td>${t.id ? `<button class="del" data-id="${t.id}" title="Delete">✕</button>` : ""}</td></tr>`;
+  <td class="sub">${mesc(t.note)}</td><td>${t.id ? `<button class="del" data-id="${t.id}" title="Delete">✕</button>` : ""}</td></tr>`;
 
 async function loadTx() {
   const q = new URLSearchParams({kind: $("#f-kind").value, source: $("#f-source").value, wallet: $("#f-wallet").value,
@@ -161,7 +171,7 @@ $("#btn-add").onclick = () => $("#addform").classList.toggle("hidden");
 $("#f-add").onsubmit = async e => {
   e.preventDefault(); const f = Object.fromEntries(new FormData(e.target));
   ["btc", "gbp", "fee_gbp", "fee_btc"].forEach(k => f[k] = +f[k] || 0); if (!f.to_wallet) f.to_wallet = null;
-  try { await post("api/tx", f); e.target.reset(); $("#addform").classList.add("hidden"); loadTx(); } catch (err) { alert(err.message); }
+  try { await post("api/tx", f); e.target.reset(); $("#addform").classList.add("hidden"); loadTx(); } catch (err) { alert(maskText(err.message)); }
 };
 
 // ---------- import ----------
@@ -177,17 +187,20 @@ $("#f-import").onsubmit = async e => {
     $("#preview").innerHTML = '<p class="sub">Reading file…</p>';
     const body = {source: fd.get("source"), filename: file.name};
     if (isPdf) body.pdf_b64 = b64(await file.arrayBuffer()); else body.text = await file.text();
-    const p = await post("api/import/preview", body); pending = p;
-    const s = p.stats;
+    pending = await post("api/import/preview", body);
+    renderPreview();
+  } catch (err) { $("#preview").innerHTML = `<p class="err">${mesc(err.message)}</p>`; }
+};
+function renderPreview() {
+    const p = pending, s = p.stats;
     $("#preview").innerHTML = `<h4>Preview — detected <b>${p.source}</b></h4>
       <p>${s.rows} rows: ${s.buys} buys, ${s.sells} sells, ${s.transfers} transfers · <b>${s.duplicates}</b> duplicates will be skipped</p>
-      ${p.errors.length ? `<div class="err">${p.errors.length} issues:<br>${p.errors.slice(0, 30).join("<br>")}</div>` : '<div class="ok">No parse errors</div>'}
+      ${p.errors.length ? `<div class="err">${p.errors.length} issues:<br>${p.errors.slice(0, 30).map(mesc).join("<br>")}</div>` : '<div class="ok">No parse errors</div>'}
       <div class="tablewrap"><table>${txHead()}${p.rows.map(r => txRow(r).replace("<tr>", `<tr class="${r.duplicate ? "dup" : ""} ${r.warning ? "warn" : ""}">`)).join("")}</table></div>
       <div class="btns" style="margin-top:12px"><button class="primary" id="btn-commit">Import ${s.rows - s.duplicates} new rows</button><button id="btn-cancel">Cancel</button></div>`;
-    $("#btn-commit").onclick = async () => { const r = await post("api/import/commit", {rows: pending.rows}); $("#preview").innerHTML = `<p class="ok">Imported ${r.inserted} transactions.</p>`; };
-    $("#btn-cancel").onclick = () => $("#preview").innerHTML = "";
-  } catch (err) { $("#preview").innerHTML = `<p class="err">${err.message}</p>`; }
-};
+    $("#btn-commit").onclick = async () => { const r = await post("api/import/commit", {rows: pending.rows}); pending = null; $("#preview").innerHTML = `<p class="ok">Imported ${r.inserted} transactions.</p>`; };
+    $("#btn-cancel").onclick = () => { $("#preview").innerHTML = ""; pending = null; };
+}
 
 // ---------- settings ----------
 async function loadSettings() {
@@ -204,8 +217,11 @@ async function loadSettings() {
   $("#dca-frequency").value = s.strike_job_enabled ? (s.strike_frequency || "daily") : "off";
   dcaState = s; applyFreq();
   loadWallets();
+  await loadLog();
+}
+async function loadLog() {
   const lg = await api("api/log");
-  $("#log").innerHTML = lg.map(l => `${ukTime(l.ts)} [${l.job}] ${l.msg}`).join("<br>") || "No jobs run yet.";
+  $("#log").innerHTML = lg.map(l => `${ukTime(l.ts)} [${esc(l.job)}] ${mesc(l.msg)}`).join("<br>") || "No jobs run yet.";
 }
 // ---------- Strike DCA: show only the schedule fields for the chosen frequency ----------
 let dcaState = {};
@@ -232,7 +248,7 @@ function applyFreq() {
   document.querySelectorAll("[data-freq]").forEach(el => el.classList.toggle("hidden", !el.dataset.freq.split(" ").includes(freq)));
   if (freq !== "off") f.elements.strike_frequency.value = freq;
   f.elements.strike_job_enabled.value = freq === "off" ? "false" : "true";
-  $("#dca-explain").textContent = dcaExplain(freq, f);
+  $("#dca-explain").textContent = maskText(dcaExplain(freq, f));
   $("#strike-next").textContent = dcaStatus(freq, dcaState);
 }
 $("#dca-frequency").addEventListener("change", applyFreq);
@@ -244,11 +260,11 @@ $("#f-settings").onsubmit = async e => {
   d.electrum_ssl = d.electrum_ssl === "true"; d.electrum_override = d.electrum_override === "true";
   d.disable_external_prices = d.disable_external_prices === "true"; d.strike_api_key_clear = d.strike_api_key_clear === "true";
   d.strike_job_enabled = d.strike_job_enabled === "true";
-  try { await post("api/settings", d); $("#save-msg").innerHTML = '<span class="ok">Saved</span>'; loadSettings(); } catch (err) { $("#save-msg").innerHTML = `<span class="err">${err.message}</span>`; }
+  try { await post("api/settings", d); $("#save-msg").innerHTML = '<span class="ok">Saved</span>'; loadSettings(); } catch (err) { $("#save-msg").innerHTML = `<span class="err">${mesc(err.message)}</span>`; }
 };
-const act = (id, fn) => $(id).onclick = async () => { try { await fn(); } catch (e) { alert(e.message); } loadSettings(); };
+const act = (id, fn) => $(id).onclick = async () => { try { await fn(); } catch (e) { alert(maskText(e.message)); } loadSettings(); };
 act("#btn-strike-test", async () => { const r = await post("api/strike/test"); alert(`Strike OK: balance ${btc(r.balance)} BTC, rate ${gbpRaw(r.rate_gbp)}`); });
-act("#btn-strike-run", async () => { const r = await post("api/strike/run"); alert(r.message || r.error); });
+act("#btn-strike-run", async () => { const r = await post("api/strike/run"); alert(maskText(r.message || r.error)); });
 act("#btn-scan", async () => { $("#scan-out").textContent = "Scanning via Electrum…"; const r = await post("api/cold/scan");
   $("#scan-out").innerHTML = `<span class="ok">Balance ${btc(r.balance)} BTC</span> (${btc(r.unconfirmed)} unconfirmed) across ${r.used_addresses.length} used addresses` + (r.wallets || []).map(w => `<br>${esc(w.name)}: ${btc(w.balance)} BTC (${w.used} used addresses)`).join(""); });
 const esc = t => String(t ?? "").replace(/[&<>"']/g, c => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
@@ -259,11 +275,11 @@ const descSumm = s => [s.policy, s.script_type, s.network, s.fingerprints && s.f
 async function loadWallets() {
   const ws = await api("api/cold/wallets"); const el = $("#cold-wallets");
   el.innerHTML = ws.length ? ws.map(w => `<div class="cw" data-id="${esc(w.id)}"><b>${esc(w.name)}</b> <span class="badge ${esc(w.type)}">${esc(w.type)}</span>${w.type_overridden ? ' <span class="sub">(set manually; detected ' + esc(w.detected_type) + ')</span>' : ""}
-    <div class="sub">${esc(w.description || "")}</div><div class="sub">${descSumm(w)} · ${w.input === "descriptor" ? "descriptor" : "xpub"}${w.balance != null ? " · " + btc(w.balance) + " BTC" : ""}${w.scanned_at ? " · scanned " + ukTime(w.scanned_at) : ""}</div>
+    <div class="sub">${mesc(w.description)}</div><div class="sub">${descSumm(w)} · ${w.input === "descriptor" ? "descriptor" : "xpub"}${w.balance != null ? " · " + btc(w.balance) + " BTC" : ""}${w.scanned_at ? " · scanned " + ukTime(w.scanned_at) : ""}</div>
     ${w.first_receive ? `<div class="sub">First receive address: <code>${esc(w.first_receive)}</code> <span class="sub">(check it matches your wallet app)</span></div>` : ""}
     ${w.detected_scripts && w.detected_scripts.length > 1 ? `<div class="sub">History found in ${w.detected_scripts.length} address types (${w.detected_scripts.map(x => esc(ADDR_LABEL[x] || x)).join(", ")}): balances are added together.</div>` : ""}
     <div class="btns" style="margin-top:6px"><button type="button" data-edit>Edit</button><button type="button" data-addr>Show first addresses</button><button type="button" class="danger" data-del>Remove</button></div>
-    <div class="edit"><input data-f="name" maxlength="60" value="${esc(w.name)}" aria-label="Name"><input data-f="description" maxlength="200" value="${esc(w.description || "")}" placeholder="Description" aria-label="Description">
+    <div class="edit"><input data-f="name" maxlength="60" value="${esc(w.name)}" aria-label="Name"><input data-f="description" class="pmask" maxlength="200" value="${esc(w.description || "")}" placeholder="Description" aria-label="Description">
       <select data-f="type" aria-label="Type label"><option value="auto">Auto (${esc(w.detected_type)})</option><option ${w.type_overridden && w.type === "Multisig" ? "selected" : ""}>Multisig</option><option ${w.type_overridden && w.type === "Single-sig" ? "selected" : ""}>Single-sig</option></select>
       ${w.input === "xpub" ? `<label class="sub">Address type <select data-f="address_type" aria-label="Address type">${ADDR_TYPES.map(([v, l]) => `<option value="${v}" ${(w.address_type || "auto") === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>` : ""}
       <button type="button" class="primary" data-save>Save</button></div></div>`).join("") : "No cold-storage wallets yet.";
@@ -273,8 +289,8 @@ async function loadWallets() {
     row.querySelector("[data-save]").onclick = async () => { try { const g = k => row.querySelector(`[data-f=${k}]`).value;
       const body = {name: g("name"), description: g("description"), type: g("type")};
       if (row.querySelector("[data-f=address_type]")) body.address_type = g("address_type");
-      await post(`api/cold/wallets/${id}`, body, "PUT"); loadWallets(); } catch (e) { alert(e.message); } };
-    row.querySelector("[data-addr]").onclick = async () => { try { const r = await api(`api/cold/wallets/${id}/addresses?n=5`); $("#scan-out").innerHTML = "Verify these match your wallet:<br>" + addrList(r); } catch (e) { alert(e.message); } };
+      await post(`api/cold/wallets/${id}`, body, "PUT"); loadWallets(); } catch (e) { alert(maskText(e.message)); } };
+    row.querySelector("[data-addr]").onclick = async () => { try { const r = await api(`api/cold/wallets/${id}/addresses?n=5`); $("#scan-out").innerHTML = "Verify these match your wallet:<br>" + addrList(r); } catch (e) { alert(maskText(e.message)); } };
     row.querySelector("[data-del]").onclick = async () => { if (!confirm("Remove this cold-storage wallet from the app?")) return; await api(`api/cold/wallets/${id}`, {method: "DELETE"}); loadWallets(); };
   });
 }
@@ -299,5 +315,5 @@ setPrivacy(PRIV);
 $("#btn-priv").onclick = () => {
   setPrivacy(!PRIV);
   const p = (location.hash || "#dash").slice(1);   // re-render figures without reloading (and losing) settings form edits
-  if (p === "settings") loadWallets(); else if (p === "dash" || p === "tx") route();
+  if (p === "settings") { loadWallets(); applyFreq(); loadLog(); } else if (p === "import" && pending) renderPreview(); else if (p === "dash" || p === "tx") route();
 };
