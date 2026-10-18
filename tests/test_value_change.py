@@ -18,6 +18,8 @@ def env(monkeypatch, tmp_path):
     monkeypatch.setattr(main, "TRUSTED_PEERS", {PROXY})
     monkeypatch.setattr(prices, "spot", lambda external=True, strike_key="": dict(SPOT))
     monkeypatch.setattr(prices, "intraday", lambda days: [])
+    def offline(*a, **k): raise RuntimeError("offline")
+    monkeypatch.setattr(prices, "_coinbase_daily", offline)   # never touch the network in tests
     main.init_storage()
 
 
@@ -155,3 +157,91 @@ def test_period_pills_default_and_persistence():
     assert 'id="c-chg"' in HTML and HTML.index('id="c-gbp"') < HTML.index('id="c-chg"')
     # chart range buttons are scoped so the change pills don't drive the chart
     assert 'querySelectorAll(".seg button' not in JS
+
+
+# ---------- 1.0.13: 4Y showed "—" when the daily history didn't reach the period start ----------
+def test_4y_backfills_missing_start_window_then_returns_a_number(monkeypatch):
+    tx("buy", NOW - timedelta(days=2000), 1.0, 5000.0)
+    tx("buy", NOW - timedelta(days=100), 0.2, 6000.0)
+    for i in range(1, 700):   # like an instance updated from <=1.0.9: Kraken's ~720 days only
+        price((NOW.date() - timedelta(days=i)).isoformat(), 30000.0)
+    with db.conn() as c:
+        db.set_settings(c, {"cold_balance_cache": {"btc": 1.18, "wallets": [], "at": NOW.isoformat()}})  # live < ledger
+    calls = []
+
+    def fake_cb(product, a, b):
+        calls.append((a, b))
+        out, d = {}, a
+        while d <= b:
+            out[d.isoformat()] = 15000.0
+            d += timedelta(days=1)
+        return out
+    monkeypatch.setattr(prices, "_coinbase_daily", fake_cb)
+    with db.conn() as c:
+        assert prices.needs_backfill(c, date_of(NOW - timedelta(days=2001)))
+    r = chg("4y")
+    assert r["available"] and r["change_gbp"] is not None and r["pct"] is not None and r["price_start"] == 15000.0
+    assert len(calls) == 1 and (calls[0][1] - calls[0][0]).days <= 10        # only the start window was fetched
+    calls.clear()
+    assert chg("4y")["available"] and calls == []                             # now cached
+
+
+def test_4y_without_external_prices_stays_unavailable_without_fetching(monkeypatch):
+    tx("buy", NOW - timedelta(days=2000), 1.0, 5000.0)
+    price((NOW.date() - timedelta(days=1)).isoformat(), 30000.0)
+    monkeypatch.setattr(prices, "_coinbase_daily", lambda *a: pytest.fail("must not fetch"))
+    with db.conn() as c:
+        db.set_settings(c, {"disable_external_prices": True})
+    assert chg("4y")["available"] is False
+
+
+def test_daily_price_uses_nearest_stored_day_within_slack():
+    ts = datetime(2022, 10, 18, 12, 0, tzinfo=timezone.utc).timestamp()   # nearest close: candle 2022-10-18
+    assert portfolio.daily_price_at({"2022-10-20": (3.0, None), "2022-10-15": (1.0, None)}, ts) == 3.0
+    assert portfolio.daily_price_at({"2022-10-14": (1.0, None), "2022-10-22": (2.0, None)}, ts) == 1.0   # tie: earlier
+    assert portfolio.daily_price_at({"2022-10-10": (1.0, None), "2022-10-27": (2.0, None)}, ts) is None
+
+
+def test_needs_backfill():
+    with db.conn() as c:
+        assert prices.needs_backfill(c, NOW.date())          # empty cache
+        price("2018-01-05", 10000.0)
+        assert not prices.needs_backfill(c, date_of(datetime(2018, 1, 1)))
+        assert prices.needs_backfill(c, date_of(datetime(2017, 12, 1)))
+
+
+def date_of(dt):
+    return dt.date()
+
+
+def test_scheduler_price_refresh_runs_in_worker_thread_with_own_connection(monkeypatch):
+    """Regression: the scheduler passed its SQLite connection into asyncio.to_thread, so every daily refresh died
+    with sqlite3.ProgrammingError and the price history (incl. the Coinbase backfill) never updated."""
+    import asyncio
+    tx("buy", NOW - timedelta(days=2000), 1.0, 5000.0)
+    seen = []
+
+    def fake_refresh(c, start):
+        c.execute("INSERT OR REPLACE INTO prices(day,gbp) VALUES('2021-01-01', 25000)")   # must not raise
+        seen.append(start)
+        return 1
+    monkeypatch.setattr(prices, "refresh_history", fake_refresh)
+    assert asyncio.run(asyncio.to_thread(main.refresh_prices_job, "2026-06-15")) == 1
+    with db.conn() as c:
+        s = db.get_settings(c)
+        assert s["prices_day"] == "2026-06-15" and s["prices_attempt_at"] and seen
+        assert prices.history(c)["2021-01-01"][0] == 25000
+
+
+def test_price_refresh_due_logic(monkeypatch):
+    import time as _t
+    day = datetime(2026, 6, 15, 12, 0)
+    assert main.prices_refresh_due({}, day)                                                   # never run
+    assert not main.prices_refresh_due({"prices_attempt_at": _t.time() - 60}, day)            # just tried: back off
+    assert main.prices_refresh_due({"prices_day": "2026-06-14", "prices_attempt_at": _t.time() - 3600}, day)
+    done = {"prices_day": "2026-06-15", "prices_attempt_at": _t.time() - 7 * 3600}
+    tx("buy", NOW - timedelta(days=2000), 1.0, 5000.0)
+    price("2026-06-14", 30000.0)
+    assert main.prices_refresh_due(done, day)            # history doesn't reach the first transaction: backfill
+    price((NOW - timedelta(days=2002)).date().isoformat(), 5000.0)
+    assert not main.prices_refresh_due(done, day)        # covered: once a day is enough

@@ -260,15 +260,25 @@ def net_invested(txs, t0, t1):
                for t in txs if t["kind"] in ("buy", "sell") and t0 < _ets(t) <= t1)
 
 
-def daily_price_at(hist, ts):
-    """Daily close nearest to epoch `ts`: candle D closes at D+1 00:00 UTC; walk back up to a week for gaps."""
+DAILY_SLACK_DAYS = 4
+
+
+def daily_price_at(hist, ts, slack=DAILY_SLACK_DAYS):
+    """Stored daily close nearest to epoch `ts` (candle D closes at D+1 00:00 UTC), searching up to `slack` days
+    either side for gaps (earlier day wins a tie)."""
     from datetime import timezone
     d = (datetime.fromtimestamp(ts, timezone.utc) + timedelta(hours=12)).date() - timedelta(days=1)
-    for i in range(8):
-        p = hist.get((d - timedelta(days=i)).isoformat(), (None,))[0]
-        if p:
-            return p
+    for i in range(slack + 1):
+        for k in ((-i, i) if i else (0,)):
+            p = hist.get((d + timedelta(days=k)).isoformat(), (None,))[0]
+            if p:
+                return p
     return None
+
+
+def _start_day(ts):
+    from datetime import timezone
+    return datetime.fromtimestamp(ts, timezone.utc).date()
 
 
 def intraday_price_at(points, ts, tolerance_s):
@@ -312,6 +322,14 @@ def change(c, period, strike_key="", now=None, spot=None, intraday=None):
         p0 = intraday_price_at(pts, t0, {"1h": 900, "1d": 3600, "1w": 3 * 3600}[period])
     if p0 is None and period != "1h":
         p0 = daily_price_at(prices.history(c), t0)
+        if p0 is None and external:   # history doesn't reach the start yet: fetch just that window, then retry
+            d0 = _start_day(t0)
+            try:
+                if prices.backfill_history(c, d0 - timedelta(days=DAILY_SLACK_DAYS + 1), d0 + timedelta(days=DAILY_SLACK_DAYS)):
+                    c.commit()
+            except Exception:
+                pass
+            p0 = daily_price_at(prices.history(c), t0)
     if not p0:
         return {**out, "reason": "No price for the start of this period"}
     ledger_now = ledger_btc_at(txs, now)

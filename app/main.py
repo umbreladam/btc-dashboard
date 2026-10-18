@@ -1,4 +1,4 @@
-import asyncio, os, json, logging
+import asyncio, os, json, logging, time
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
 from fastapi import FastAPI, HTTPException, Request
@@ -66,6 +66,32 @@ async def startup():
 
 
 # ---------------- scheduler ----------------
+PRICE_RETRY_S = 1800
+
+
+def prices_refresh_due(s, now):
+    """Daily refresh, or (every 6 h) while the history doesn't reach the first transaction yet (e.g. right after
+    updating from a version without the Coinbase backfill). Never more often than every 30 min, so a failing
+    price source isn't hammered every scheduler tick."""
+    since = time.time() - (s.get("prices_attempt_at") or 0)
+    if since < PRICE_RETRY_S:
+        return False
+    if s.get("prices_day") != now.date().isoformat():
+        return True
+    with db.conn() as c:
+        return since > 6 * 3600 and prices.needs_backfill(c, prices.history_start(c))
+
+
+def refresh_prices_job(today: str):
+    """Runs in a worker thread with its OWN SQLite connection (sqlite3 connections can't cross threads: passing the
+    scheduler's connection made every refresh fail with ProgrammingError, so the daily refresh never ran)."""
+    with db.conn() as c:
+        db.set_settings(c, {"prices_attempt_at": time.time()})
+    with db.conn() as c:
+        got = prices.refresh_history(c, prices.history_start(c))
+        if got:
+            db.set_settings(c, {"prices_day": today})
+    return got
 async def scheduler():
     last_cold = 0
     while True:
@@ -75,10 +101,8 @@ async def scheduler():
                 s = db.get_settings(c)
             if strike_key(s) and schedule.should_run(now, s):
                 await asyncio.to_thread(run_strike_job)
-            if s.get("prices_day") != now.date().isoformat() and not s.get("disable_external_prices"):
-                with db.conn() as c:
-                    await asyncio.to_thread(prices.refresh_history, c, prices.history_start(c))
-                    db.set_settings(c, {"prices_day": now.date().isoformat()})
+            if not s.get("disable_external_prices") and prices_refresh_due(s, now):
+                await asyncio.to_thread(refresh_prices_job, now.date().isoformat())
             since = asyncio.get_event_loop().time() - last_cold
             # every 30 min, or soon after a wallet change cleared the cached balance (e.g. new address type)
             if cold_wallets(s) and electrum_target(s) and (since > 1800 or (s.get("cold_balance_cache") is None and since > 60)):

@@ -74,10 +74,11 @@ def missing_days(c, start: date, end: date):
     return out
 
 
-def backfill_history(c, start: date):
+def backfill_history(c, start: date, end: date = None):
     """Kraken/CoinGecko only reach back ~720/365 days. Fill older gaps (back to the first transaction) from
     Coinbase Exchange daily candles. Only missing days are requested, so after the first run this is a no-op."""
-    gaps = missing_days(c, start, datetime.now(timezone.utc).date() - timedelta(days=1))
+    yday = datetime.now(timezone.utc).date() - timedelta(days=1)
+    gaps = missing_days(c, start, min(end or yday, yday))
     if not gaps:
         return 0
     runs = [[gaps[0], gaps[0]]]   # contiguous gap runs, so one stray missing day doesn't refetch years of candles
@@ -100,6 +101,13 @@ def backfill_history(c, start: date):
                       "gbp=excluded.gbp, synthetic=0 WHERE prices.gbp IS NULL OR prices.gbp <= 0", (d.isoformat(), p))
             got += 1
     return got
+
+
+def needs_backfill(c, start: date, slack_days=7):
+    """True if the cached daily history doesn't reach back to `start` (e.g. an instance updated from <=1.0.9,
+    whose daily refresh had already run that day, so the Coinbase backfill never ran)."""
+    r = c.execute("SELECT min(day) FROM prices WHERE gbp IS NOT NULL AND gbp > 0").fetchone()
+    return not r or not r[0] or date.fromisoformat(r[0]) > start + timedelta(days=slack_days)
 
 
 def history_start(c, default=date(2021, 1, 1)):
