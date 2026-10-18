@@ -20,6 +20,16 @@ const LN_RE = /\b(ln(?:bc|tb|bcrt|sb))(\d+)(?=[munp]?1|\.\.\.|…)/gi;
 const maskText = t => { t = String(t ?? ""); return PRIV ? t.replace(LN_RE, "$1" + MASK).replace(NUM_RE, (m, keep, cur, after) =>
   keep || !UNIT_RE.test(after) ? m : (cur ? cur.trim() : "") + MASK) : t; };
 const mesc = t => esc(maskText(t));   // mask, then HTML-escape
+// Value change indicator: "+1.52% (+£1,650)". Colour follows the sign; privacy masks the £ amount, keeps % + colour.
+const chgFmt = r => {
+  if (!r || !r.available || r.change_gbp == null) return {text: "—", cls: "flat"};
+  const v = Math.round(r.change_gbp), pct = r.pct;
+  const cls = v > 0 ? "up" : v < 0 ? "down" : "flat";
+  const sign = v > 0 ? "+" : v < 0 ? "-" : "";
+  const p = pct == null ? "" : (pct > 0 && v ? "+" : "") + (Math.abs(pct) < 0.005 ? "0.00" : pct.toFixed(2)) + "% ";
+  const amt = PRIV ? "£" + MASK : sign + gbpRaw(Math.abs(v));
+  return {text: p ? `${p}(${amt})` : amt, cls};
+};
 function setPrivacy(on) {
   PRIV = !!on; document.documentElement.classList.toggle("priv", PRIV);
   try { localStorage.setItem("satoshi-privacy", PRIV ? "1" : "0"); } catch (e) {}
@@ -64,6 +74,7 @@ async function loadDash() {
     `<div><span><span class="dot" style="background:${c}"></span>${n} <span class="tag">${src}</span></span><b>${btc(v)}</b></div>`).join("") +
     (Math.abs(h.mismatch_btc) > 1e-6 ? `<div class="sub">Live balances differ from transaction ledger by ${btc(h.mismatch_btc)} BTC — import missing records.</div>` : "");
   $("#c-gbp").textContent = gbp(s.value.gbp); $("#c-usd").textContent = usd(s.value.usd);
+  loadChange();
   $("#c-basis").textContent = gbp(s.cost_basis_gbp); $("#c-avg").textContent = "Avg buy price " + gbp(s.avg_price_gbp) + " / BTC";
   const cls = s.pnl_gbp >= 0 ? "up" : "down";
   $("#c-pnl").textContent = signed(s.pnl_gbp); $("#c-pnl").className = "val " + cls;
@@ -83,11 +94,30 @@ async function loadDash() {
   drawWallets(s);
   series = await api("api/series");
   if (intraOff === null) { try { intraOff = !!(await api("api/settings")).disable_external_prices; } catch (e) { intraOff = false; } }
-  document.querySelectorAll(".seg button.intra").forEach(b => b.classList.toggle("hidden", intraOff));
+  document.querySelectorAll(".seg[data-chart] button.intra").forEach(b => b.classList.toggle("hidden", intraOff));
   await drawCharts();
   const buys = await api("api/tx?kind=buy");
   $("#recent").innerHTML = txHead() + buys.slice(0, 10).map(txRow).join("");
 }
+
+// ---------- value change over a period ----------
+const CHG_PERIODS = ["1h", "1d", "1w", "1m", "1y", "4y", "all"];
+let chgPeriod = (() => { try { const v = localStorage.getItem("satoshi-change-period"); return CHG_PERIODS.includes(v) ? v : "1d"; } catch (e) { return "1d"; } })();
+let chgSeq = 0;
+async function loadChange() {
+  document.querySelectorAll("#chg-seg button").forEach(b => { b.classList.toggle("on", b.dataset.p === chgPeriod); b.setAttribute("aria-pressed", b.dataset.p === chgPeriod); });
+  const seq = ++chgSeq, el = $("#c-chg");
+  let r = null;
+  try { r = await api("api/change?period=" + chgPeriod); } catch (e) { r = null; }
+  if (seq !== chgSeq) return;   // a newer period was chosen meanwhile
+  const f = chgFmt(r);
+  el.textContent = f.text; el.className = "chg " + f.cls;
+  el.title = r && r.available ? (chgPeriod === "all" ? "Unrealised PnL vs cost basis" : "Market change, excluding money paid in/out during the period") : (r && r.reason) || "Unavailable";
+}
+document.querySelectorAll("#chg-seg button").forEach(b => b.onclick = () => {
+  chgPeriod = b.dataset.p; try { localStorage.setItem("satoshi-change-period", chgPeriod); } catch (e) {}
+  loadChange();
+});
 
 const WCOL = {Multisig: ["#3861fb", "#7c5cff", "#2fb5ff", "#5a7dff"], "Single-sig": ["#16c784", "#0fa3a3", "#6be0a8"], Exchange: ["#f7931a", "#ffb547", "#e2711d"], Other: ["#8a94a3"], Cold: ["#5f6b7a"]};
 function drawWallets(s) {
@@ -116,8 +146,8 @@ async function rangeData() {
     if (!intra[days] || Date.now() - intra[days].at > 120e3) intra[days] = {at: Date.now(), r: await api("api/series/intraday?days=" + days).catch(() => ({available: false}))};
     const r = intra[days].r;
     if (r.available && r.points.length) return r.points.map(p => ({...p, label: days === 1 ? p.day.slice(11) : new Date(p.t * 1000).toLocaleString("en-GB", {timeZone: "Europe/London", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit"})}));
-    document.querySelectorAll(".seg button.intra").forEach(b => b.classList.add("hidden")); intraOff = true;
-    range = "0"; document.querySelectorAll(".seg button").forEach(x => x.classList.toggle("on", x.dataset.r === "0"));
+    document.querySelectorAll(".seg[data-chart] button.intra").forEach(b => b.classList.add("hidden")); intraOff = true;
+    range = "0"; document.querySelectorAll(".seg[data-chart] button").forEach(x => x.classList.toggle("on", x.dataset.r === "0"));
   }
   const n = +range;
   if (!n) return series.map(x => ({...x, label: x.day}));
@@ -139,8 +169,8 @@ async function drawCharts() {
     {label: "BTC held", data: d.map(x => x.btc), borderColor: "#16c784", backgroundColor: "rgba(22,199,132,.12)", fill: true, borderWidth: 2, stepped: true}]},
     options: opts(btc4)});
 }
-document.querySelectorAll(".seg button").forEach(b => b.onclick = () => {
-  document.querySelectorAll(".seg button").forEach(x => x.classList.remove("on")); b.classList.add("on"); range = b.dataset.r; drawCharts();
+document.querySelectorAll(".seg[data-chart] button").forEach(b => b.onclick = () => {
+  document.querySelectorAll(".seg[data-chart] button").forEach(x => x.classList.remove("on")); b.classList.add("on"); range = b.dataset.r; drawCharts();
 });
 
 // ---------- transactions ----------

@@ -209,6 +209,15 @@ def api_summary():
         return portfolio.summary(c, strike_key(s), [wallets.public_view(w) for w in cold_wallets(s)])
 
 
+@app.get("/api/change")
+def api_change(period: str = "1d"):
+    """Value change over 1h/1d/1w/1m/1y/4y/all, excluding deposits (see portfolio.change)."""
+    if period.lower() not in (*portfolio.PERIODS, "all"):
+        raise HTTPException(400, "Unknown period")
+    with db.conn() as c:
+        return portfolio.change(c, period, strike_key(db.get_settings(c)))
+
+
 @app.get("/api/series")
 def api_series():
     with db.conn() as c:

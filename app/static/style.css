@@ -56,3 +56,8 @@ input[type=checkbox]{width:auto;margin-right:6px;vertical-align:middle}
 .seg button.intra.hidden{display:none}.rangenote{font-size:12px;color:var(--mut);margin-left:8px}
 /* privacy mode: blur amount inputs until focused (values untouched) */
 html.priv .pmask:not(:focus){filter:blur(5px)}
+/* value change indicator */
+.valrow{display:flex;align-items:baseline;gap:4px 10px;flex-wrap:wrap}.chg{font-size:13.5px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+.chg.flat{color:var(--mut)}.chg.up{color:var(--up)}.chg.down{color:var(--down)}
+.seg.mini{display:flex;flex-wrap:nowrap;margin-top:10px}.seg.mini button{padding:3px 0;font-size:11px;min-width:0;flex:1 1 0;line-height:1.3}
+@media(max-width:560px){.seg.mini button{padding:6px 0;font-size:12.5px}.chg{font-size:14.5px}}

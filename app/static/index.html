@@ -24,7 +24,10 @@
   <div class="cards">
     <div class="card big"><div class="lbl">Total BTC held</div><div class="val" id="c-btc">—</div>
       <div class="split" id="c-split"></div></div>
-    <div class="card"><div class="lbl">Value</div><div class="val" id="c-gbp">—</div><div class="sub" id="c-usd"></div></div>
+    <div class="card vcard"><div class="lbl">Value</div>
+      <div class="valrow"><div class="val" id="c-gbp">—</div><div class="chg flat" id="c-chg" aria-live="polite">—</div></div>
+      <div class="sub" id="c-usd"></div>
+      <div class="seg mini" id="chg-seg" role="group" aria-label="Change period"><button data-p="1h">1H</button><button data-p="1d">1D</button><button data-p="1w">1W</button><button data-p="1m">1M</button><button data-p="1y">1Y</button><button data-p="4y">4Y</button><button data-p="all">All</button></div></div>
     <div class="card"><div class="lbl">Cost basis (S104 pool)</div><div class="val" id="c-basis">—</div><div class="sub" id="c-avg"></div></div>
     <div class="card"><div class="lbl">Unrealised PnL</div><div class="val" id="c-pnl">—</div><div class="sub" id="c-pnlpct"></div></div>
     <div class="card"><div class="lbl">Value if sold today, after UK CGT</div><div class="val" id="c-after">—</div><div class="sub" id="c-cgt"></div></div>

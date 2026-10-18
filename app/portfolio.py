@@ -42,21 +42,31 @@ def tax_settings(s):
                                                         "basic_rate", "higher_rate", "annual_exempt", "exempt_used")})
 
 
-def summary(c, strike_key="", cold_wallets=None):
-    s = db.get_settings(c)
-    txs = load(c)
-    ledger = wallets(txs)
+def holdings(s, ledger):
+    """(strike, cold, other, total) BTC: live Strike / cold-scan balances when cached, else the transaction ledger."""
     strike = s["strike_balance_cache"]["btc"] if s.get("strike_balance_cache") else ledger.get("strike", 0)
     cold = s["cold_balance_cache"]["btc"] if s.get("cold_balance_cache") else ledger.get("cold", 0)
     other = sum(v for k, v in ledger.items() if k not in ("strike", "cold"))
-    total = strike + cold + other
-    ev = events(txs)
-    res = cgt.match(ev) if ev else cgt.Result([], 0, 0)
+    return strike, cold, other, strike + cold + other
+
+
+def current_price(c, s, strike_key=""):
     sp = dict(prices.spot(external=not s.get("disable_external_prices"), strike_key=strike_key))
     if not sp.get("gbp"):  # offline / external fetches disabled without Strike: last cached daily close
         r = c.execute("SELECT gbp, usd FROM prices WHERE gbp IS NOT NULL ORDER BY day DESC LIMIT 1").fetchone()
         if r:
             sp.update(gbp=r["gbp"], usd=r["usd"], src="cached daily close")
+    return sp
+
+
+def summary(c, strike_key="", cold_wallets=None):
+    s = db.get_settings(c)
+    txs = load(c)
+    ledger = wallets(txs)
+    strike, cold, other, total = holdings(s, ledger)
+    ev = events(txs)
+    res = cgt.match(ev) if ev else cgt.Result([], 0, 0)
+    sp = current_price(c, s, strike_key)
     pg, pu = sp.get("gbp") or 0, sp.get("usd") or 0
     value_gbp = total * pg
     # Cost basis = Section 104 pool cost (matches what HMRC uses after same-day/30-day matches)
@@ -222,3 +232,94 @@ def intraday(c, points):
         out.append({"t": ts, "day": datetime.fromtimestamp(ts, LDN).strftime("%Y-%m-%d %H:%M"),
                     "btc": round(btc, 8), "cost": round(pool, 2), "value": round(btc * p, 2), "price": p})
     return out
+
+
+# ---------------- value change over a period ----------------
+PERIODS = {"1h": timedelta(hours=1), "1d": timedelta(days=1), "1w": timedelta(days=7), "1m": timedelta(days=30),
+           "1y": timedelta(days=365), "4y": timedelta(days=4 * 365 + 1)}
+
+
+def _ets(t):
+    from datetime import timezone
+    dt = datetime.fromisoformat(t["ts"])
+    return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).timestamp()
+
+
+def ledger_btc_at(txs, ts):
+    """BTC held per the transaction ledger at epoch `ts` (buys - sells - network fees / lost; transfers are neutral)."""
+    btc = 0.0
+    for t in txs:
+        if _ets(t) <= ts:
+            btc += t["btc"] if t["kind"] == "buy" else -t["btc"] if t["kind"] == "sell" else -(t["fee_btc"] or 0)
+    return btc
+
+
+def net_invested(txs, t0, t1):
+    """GBP put in (buys at cost) minus GBP taken out (sell proceeds) between epochs t0 (excl.) and t1 (incl.)."""
+    return sum((t["gbp"] or 0) * (1 if t["kind"] == "buy" else -1)
+               for t in txs if t["kind"] in ("buy", "sell") and t0 < _ets(t) <= t1)
+
+
+def daily_price_at(hist, ts):
+    """Daily close nearest to epoch `ts`: candle D closes at D+1 00:00 UTC; walk back up to a week for gaps."""
+    from datetime import timezone
+    d = (datetime.fromtimestamp(ts, timezone.utc) + timedelta(hours=12)).date() - timedelta(days=1)
+    for i in range(8):
+        p = hist.get((d - timedelta(days=i)).isoformat(), (None,))[0]
+        if p:
+            return p
+    return None
+
+
+def intraday_price_at(points, ts, tolerance_s):
+    """Price of the intraday point nearest to epoch `ts` if it is within `tolerance_s`."""
+    if not points:
+        return None
+    t, p = min(points, key=lambda x: abs(x[0] - ts))
+    return p if abs(t - ts) <= tolerance_s and p else None
+
+
+def change(c, period, strike_key="", now=None, spot=None, intraday=None):
+    """Market performance of the portfolio over `period` (1h/1d/1w/1m/1y/4y/all), excluding money paid in/out:
+    change = value now - (value at start + net GBP invested during the period); pct = change / that base.
+    Holdings basis matches the main Value (live balances); the gap between live balances and the ledger is treated
+    as held throughout. 'all' = unrealised PnL vs S104 cost basis (same as the PnL card)."""
+    from datetime import timezone
+    period = (period or "1d").lower()
+    if period not in PERIODS and period != "all":
+        raise ValueError("unknown period")
+    s = db.get_settings(c)
+    txs = load(c)
+    sp = spot if spot is not None else current_price(c, s, strike_key)
+    pg = sp.get("gbp") or 0
+    out = {"period": period, "available": False, "change_gbp": None, "pct": None}
+    if not pg:
+        return {**out, "reason": "No current price"}
+    if period == "all":
+        ev = events(txs)
+        res = cgt.match(ev) if ev else cgt.Result([], 0, 0)
+        if not res.pool_cost:
+            return {**out, "reason": "No cost basis"}
+        pnl = res.pool_btc * pg - res.pool_cost
+        return {**out, "available": True, "change_gbp": pnl, "pct": pnl / res.pool_cost * 100,
+                "base_gbp": res.pool_cost, "value_now": res.pool_btc * pg}
+    now = now or datetime.now(timezone.utc).timestamp()
+    t0 = now - PERIODS[period].total_seconds()
+    external = not s.get("disable_external_prices")
+    p0 = None
+    if period in ("1h", "1d", "1w") and external:
+        pts = intraday(7 if period == "1w" else 1) if intraday else prices.intraday(7 if period == "1w" else 1)
+        p0 = intraday_price_at(pts, t0, {"1h": 900, "1d": 3600, "1w": 3 * 3600}[period])
+    if p0 is None and period != "1h":
+        p0 = daily_price_at(prices.history(c), t0)
+    if not p0:
+        return {**out, "reason": "No price for the start of this period"}
+    ledger_now = ledger_btc_at(txs, now)
+    total = holdings(s, wallets(txs))[3]
+    h0 = max(0.0, ledger_btc_at(txs, t0) + (total - ledger_now))
+    v0, inv, vnow = h0 * p0, net_invested(txs, t0, now), total * pg
+    base = v0 + inv
+    chg = vnow - base
+    return {**out, "available": True, "change_gbp": chg, "pct": (chg / base * 100) if base > 0 else None,
+            "base_gbp": base, "start_value": v0, "net_invested": inv, "value_now": vnow,
+            "price_start": p0, "price_now": pg, "start": datetime.fromtimestamp(t0, timezone.utc).isoformat()}
