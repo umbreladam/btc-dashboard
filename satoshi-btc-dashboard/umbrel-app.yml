@@ -30,7 +30,7 @@ gallery:
   - https://raw.githubusercontent.com/umbreladam/umbrel-app-store/main/satoshi-btc-dashboard/gallery/3.jpg
   - https://raw.githubusercontent.com/umbreladam/umbrel-app-store/main/satoshi-btc-dashboard/gallery/4.jpg
 releaseNotes: >-
-  Fixes 4Y value change.
+  Internal: demo-mode support (used by the new Satoshi Demo app); no change for this app.
 dependencies:
   - electrs
 path: ""

@@ -9,7 +9,7 @@ services:
 
   web:
     # Same image as Satoshi BTC Dashboard, run with DEMO_MODE=1 (fake data, no Strike / Electrum / wallet connections).
-    image: ghcr.io/umbreladam/btc-dashboard:1.0.14@sha256:DIGEST
+    image: ghcr.io/umbreladam/btc-dashboard:1.0.14@sha256:50e8eed615bb9d8c517b8b82d40821c3e02404f7abf563d9ab853eaa68de978c
     user: "1000:1000"
     init: true
     restart: on-failure
