@@ -152,3 +152,11 @@ Limits, honestly:
 **Privacy mode.** The eye icon in the header masks every absolute amount on screen (balances, values, cost basis, CGT, chart axes and tooltips) and every number inside free text: transaction notes, wallet descriptions, import preview issues, the job log and status messages, including Lightning invoice amounts. Dates, times, percentages, counts in the transaction summary, the market price and chart shapes stay visible. Amount fields in Settings are blurred until focused. Masking is display-only; stored data is unchanged.
 
 **Prices.** *Settings → Data → Disable external price fetches* stops all CoinGecko/Kraken/Coinbase Exchange price requests. The spot price then comes from Strike's ticker if a key is saved, otherwise from the last cached daily close.
+
+## Satoshi Demo (demo mode)
+
+The same image run with `DEMO_MODE=1` (Umbrel app `satoshi-demo`, port 8766, see `satoshi-demo/`) is a meetup/presentation
+edition: a first-launch wizard (start date, DCA amount + frequency, salary, lump sum, cold-storage cadence, number of
+exchanges) generates a fake history on made-up exchanges and wallets at real historical BTC/GBP prices. Strike, Electrum
+and wallet connections are disabled; "Reset demo" wipes the data and restarts the wizard.
+Screenshots: `python screenshot.py http://localhost:8766 --demo /path/to/out`, gallery: `python gallery.py http://localhost:8766 --demo`.

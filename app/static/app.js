@@ -52,8 +52,11 @@ Chart.defaults.color = "#8a94a3"; Chart.defaults.borderColor = "#252d38"; Chart.
 let charts = {}, series = [], range = "0", intraOff = null, intra = {};
 
 // ---------- routing ----------
+let DEMO = {demo: false};
 function route() {
-  const p = (location.hash || "#dash").slice(1);
+  let p = (location.hash || "#dash").slice(1);
+  if (DEMO.demo && !DEMO.configured) p = "wizard";
+  else if (p === "wizard") p = "dash";
   document.querySelectorAll("main > section").forEach(s => s.classList.toggle("hidden", s.id !== "page-" + p));
   document.querySelectorAll("nav a").forEach(a => a.classList.toggle("active", a.getAttribute("href") === "#" + p));
   ({dash: loadDash, tx: loadTx, settings: loadSettings}[p] || (() => {}))();
@@ -70,7 +73,7 @@ async function loadDash() {
   $("#c-split").innerHTML = [
     ["#f7931a", "Strike balance", h.strike, h.strike_live ? "live API" : "ledger"],
     ["#3861fb", "Cold storage", h.cold, h.cold_live ? "Electrs" : "ledger"],
-    ["#8a94a3", "Other / exchanges", h.other, "ledger"]].map(([c, n, v, src]) =>
+    ["#8a94a3", "Other / exchanges", h.other, "ledger"]].filter(x => !(s.demo && x[1] === "Strike balance")).map(([c, n, v, src]) =>
     `<div><span><span class="dot" style="background:${c}"></span>${n} <span class="tag">${src}</span></span><b>${btc(v)}</b></div>`).join("") +
     (Math.abs(h.mismatch_btc) > 1e-6 ? `<div class="sub">Live balances differ from transaction ledger by ${btc(h.mismatch_btc)} BTC — import missing records.</div>` : "");
   $("#c-gbp").textContent = gbp(s.value.gbp); $("#c-usd").textContent = usd(s.value.usd);
@@ -243,6 +246,7 @@ async function loadSettings() {
   $("#electrum-now").innerHTML = ef ? `Electrum server: <b>${esc(ef.host)}:${ef.port}</b> ${ef.overridden ? '<span class="err">custom server (sees your addresses)</span>' : '<span class="ok">Umbrel Electrs (locked)</span>'}${ef.ssl ? " · TLS " + (ef.pinned ? "pinned" : "CA-verified") : " · TCP"}`
     : '<span class="err">Electrs not detected. Install the Electrs app on your Umbrel.</span>';
   if (ef && ef.overridden) $("#electrum-adv").open = true;
+  if (DEMO.demo) $("#electrum-now").innerHTML = '<span class="tag">demo</span> Electrum is disabled in demo mode.';
   if (!f.elements.electrum_port_override.value || f.elements.electrum_port_override.value === "0") f.elements.electrum_port_override.value = 50001;
   $("#dca-frequency").value = s.strike_job_enabled ? (s.strike_frequency || "daily") : "off";
   dcaState = s; applyFreq();
@@ -304,6 +308,7 @@ const ADDR_LABEL = Object.fromEntries(ADDR_TYPES);
 const descSumm = s => [s.policy, s.script_type, s.network, s.fingerprints && s.fingerprints.length ? "fingerprints " + s.fingerprints.join(", ") : "", s.checksum_verified ? "checksum OK" : "", s.change_chain_inferred ? "change chain /1/* inferred" : ""].filter(Boolean).map(esc).join(" · ");
 async function loadWallets() {
   const ws = await api("api/cold/wallets"); const el = $("#cold-wallets");
+  if (DEMO.demo) { el.innerHTML = ws.map(w => `<div class="cw"><b>${esc(w.name)}</b> <span class="badge ${esc(w.type)}">${esc(w.type)}${w.policy && w.type === "Multisig" ? " " + esc(w.policy) : ""}</span> <span class="tag">demo</span><div class="sub">${mesc(w.description)}</div></div>`).join("") || "No demo wallets yet."; return; }
   el.innerHTML = ws.length ? ws.map(w => `<div class="cw" data-id="${esc(w.id)}"><b>${esc(w.name)}</b> <span class="badge ${esc(w.type)}">${esc(w.type)}</span>${w.type_overridden ? ' <span class="sub">(set manually; detected ' + esc(w.detected_type) + ')</span>' : ""}
     <div class="sub">${mesc(w.description)}</div><div class="sub">${descSumm(w)} · ${w.input === "descriptor" ? "descriptor" : "xpub"}${w.balance != null ? " · " + btc(w.balance) + " BTC" : ""}${w.scanned_at ? " · scanned " + ukTime(w.scanned_at) : ""}</div>
     ${w.first_receive ? `<div class="sub">First receive address: <code>${esc(w.first_receive)}</code> <span class="sub">(check it matches your wallet app)</span></div>` : ""}
@@ -338,7 +343,46 @@ act("#btn-prices", async () => { const r = await post("api/prices/refresh"); ale
 act("#btn-ex-load", async () => { const r = await post("api/example/load"); alert(`Inserted ${r.inserted} example rows`); });
 act("#btn-ex-del", async () => { if (!confirm("Delete all EXAMPLE transactions?")) return; const r = await api("api/example", {method: "DELETE"}); alert(`Deleted ${r.deleted}`); });
 
-route();
+// ---------- demo mode (Satoshi Demo app): wizard, reset, integrations shown disabled ----------
+async function initDemo() {
+  try { DEMO = await api("api/demo/status"); } catch (e) { DEMO = {demo: false}; }
+  if (!DEMO.demo) return;
+  document.title = "Satoshi Demo"; document.documentElement.classList.add("demo");
+  document.querySelector(".brand span").innerHTML = "Satoshi <b>Demo</b>";
+  $("#demo-banner").classList.remove("hidden");
+  ["#btn-ex-load", "#btn-ex-del"].forEach(x => $(x).classList.add("hidden"));
+  if (!document.querySelector(".demo-note")) for (const [id, what] of [["#strike-panel", "Strike API"], ["#cold-panel", "Electrum / watch-only wallet"]]) {
+    const pn = $(id); pn.classList.add("demo-off");
+    pn.querySelectorAll("input,select,textarea,button").forEach(e => { e.disabled = true; if (e.type === "password" || e.tagName === "TEXTAREA") { e.value = ""; e.placeholder = "disabled in demo"; } });
+    pn.querySelector(".form").insertAdjacentHTML("afterbegin", `<p class="wide demo-note"><span class="tag">demo</span> ${what} connections are disabled in demo mode: nothing is ever sent to Strike, Electrum or any wallet. Key / descriptor inputs are switched off.</p>`);
+  }
+  if (DEMO.configured) {
+    const ws = await api("api/cold/wallets").catch(() => []);
+    const opts = ws.map(w => `<option value="${esc(w.id.slice(2))}">${esc(w.name)}</option>`).join("");
+    $("#f-wallet").innerHTML = '<option value="">All wallets</option>' + opts;
+    $("#f-source").innerHTML = '<option value="">All sources</option>' + ws.filter(w => w.type === "Exchange").map(w => `<option value="${esc(w.id.slice(2))}">${esc(w.name)}</option>`).join("") + "<option>manual</option>";
+  }
+  const f = $("#f-wizard"), d = new Date(); d.setFullYear(d.getFullYear() - 3);
+  const pr = DEMO.params || {};
+  f.elements.start.max = new Date(Date.now() - 14 * 864e5).toISOString().slice(0, 10);
+  f.elements.start.value = pr.start || d.toISOString().slice(0, 10);
+  for (const k of ["amount", "frequency", "salary", "lump_sum", "cold_every", "exchanges"]) if (pr[k] != null) f.elements[k].value = pr[k];
+}
+$("#f-wizard").onsubmit = async e => {
+  e.preventDefault(); const d = Object.fromEntries(new FormData(e.target));
+  for (const k of ["amount", "salary", "lump_sum", "exchanges"]) d[k] = +d[k] || 0;
+  $("#btn-wizard").disabled = true; $("#wizard-msg").textContent = "Fetching real BTC/GBP price history and generating your stack…";
+  try { const r = await post("api/demo/setup", d); $("#wizard-msg").textContent = `Generated ${r.rows} transactions`;
+    await initDemo(); location.hash = "#dash"; route(); }
+  catch (err) { $("#wizard-msg").innerHTML = `<span class="err">${mesc(err.message)}</span>`; }
+  finally { $("#btn-wizard").disabled = false; }
+};
+$("#btn-demo-reset").onclick = async () => {
+  if (!confirm("Reset the demo? This deletes all demo data and restarts the setup wizard.")) return;
+  await post("api/demo/reset"); DEMO.configured = false; intraOff = null; location.hash = "#wizard"; route();
+};
+
+initDemo().then(route);
 
 // ---------- privacy toggle ----------
 setPrivacy(PRIV);

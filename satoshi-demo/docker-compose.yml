@@ -1,0 +1,23 @@
+version: "3.7"
+
+services:
+  app_proxy:
+    environment:
+      # Format: <app-id>_<docker-service-name>_1
+      APP_HOST: satoshi-demo_web_1
+      APP_PORT: 8080
+
+  web:
+    # Same image as Satoshi BTC Dashboard, run with DEMO_MODE=1 (fake data, no Strike / Electrum / wallet connections).
+    image: ghcr.io/umbreladam/btc-dashboard:1.0.14@sha256:DIGEST
+    user: "1000:1000"
+    init: true
+    restart: on-failure
+    stop_grace_period: 1m
+    volumes:
+      - ${APP_DATA_DIR}/data:/data
+    environment:
+      DATA_DIR: /data
+      TZ: Europe/London
+      DEMO_MODE: "1"
+      LOAD_EXAMPLE_DATA: "0"

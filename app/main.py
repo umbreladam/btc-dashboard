@@ -5,7 +5,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
-from . import statements, descriptor, schedule, db, importers, portfolio, prices, strike, electrum, example, security, wallets
+from . import statements, descriptor, schedule, db, importers, portfolio, prices, strike, electrum, example, security, wallets, demo
 
 os.umask(0o077)  # every file this process creates (DB, WAL, key file) is owner-only
 LDN = ZoneInfo("Europe/London")
@@ -15,6 +15,9 @@ log = logging.getLogger("satoshi")
 TRUSTED_PEERS = security.trusted_peers()
 OVERRIDE_PHRASE = "this reveals my addresses"
 GENERIC_WALLET_ERR = "Could not read that xpub / descriptor / wallet export"
+# DEMO_MODE=1 (Satoshi Demo app): fake generated history, NEVER contacts Strike, Electrum or any wallet.
+DEMO = os.environ.get("DEMO_MODE", "0") == "1"
+DEMO_OFF = "Disabled in demo mode"
 
 
 @app.middleware("http")
@@ -57,7 +60,7 @@ async def startup():
         return
     with db.conn() as c:
         s = db.get_settings(c)
-        if os.environ.get("LOAD_EXAMPLE_DATA", "1") == "1" and not s.get("example_seeded"):
+        if not DEMO and os.environ.get("LOAD_EXAMPLE_DATA", "1") == "1" and not s.get("example_seeded"):
             if not s.get("disable_external_prices"):
                 prices.refresh_history(c, prices.history_start(c))
             example.generate(c, {k: v[0] for k, v in prices.history(c).items()})
@@ -99,13 +102,13 @@ async def scheduler():
             now = datetime.now(LDN)
             with db.conn() as c:
                 s = db.get_settings(c)
-            if strike_key(s) and schedule.should_run(now, s):
+            if not DEMO and strike_key(s) and schedule.should_run(now, s):
                 await asyncio.to_thread(run_strike_job)
             if not s.get("disable_external_prices") and prices_refresh_due(s, now):
                 await asyncio.to_thread(refresh_prices_job, now.date().isoformat())
             since = asyncio.get_event_loop().time() - last_cold
             # every 30 min, or soon after a wallet change cleared the cached balance (e.g. new address type)
-            if cold_wallets(s) and electrum_target(s) and (since > 1800 or (s.get("cold_balance_cache") is None and since > 60)):
+            if not DEMO and cold_wallets(s) and electrum_target(s) and (since > 1800 or (s.get("cold_balance_cache") is None and since > 60)):
                 last_cold = asyncio.get_event_loop().time()
                 try:
                     await cold_scan()
@@ -129,11 +132,15 @@ def safe_err(e) -> str:
 
 def strike_key(s) -> str:
     """Key comes from the user's Settings entry (encrypted at rest); env STRIKE_API_KEY is an optional override."""
+    if DEMO:
+        return ""
     return security.decrypt(db.DATA_DIR, s.get("strike_api_key") or "") or os.environ.get("STRIKE_API_KEY", "")
 
 
 def electrum_target(s):
     """(host, port, ssl, cert_fp). Locked to Umbrel's Electrs unless an explicit, confirmed override is set."""
+    if DEMO:
+        return None
     if s.get("electrum_override") and s.get("electrum_override_confirm") == OVERRIDE_PHRASE and s.get("electrum_host_override"):
         return (s["electrum_host_override"], int(s.get("electrum_port_override") or 50001),
                 bool(s.get("electrum_ssl")), s.get("electrum_cert_fp") or "")
@@ -144,6 +151,8 @@ def electrum_target(s):
 
 
 def run_strike_job():
+    if DEMO:
+        return {"error": DEMO_OFF}
     with db.conn() as c:
         s = db.get_settings(c)
         key = strike_key(s)
@@ -188,6 +197,8 @@ def wallet_addresses(spec, script, n):
 
 
 async def cold_scan():
+    if DEMO:
+        raise HTTPException(403, DEMO_OFF)
     with db.conn() as c:
         s = db.get_settings(c)
     ws = cold_wallets(s)
@@ -230,7 +241,9 @@ async def cold_scan():
 def api_summary():
     with db.conn() as c:
         s = db.get_settings(c)
-        return portfolio.summary(c, strike_key(s), [wallets.public_view(w) for w in cold_wallets(s)])
+        out = portfolio.summary(c, strike_key(s), [] if DEMO else [wallets.public_view(w) for w in cold_wallets(s)])
+        out["demo"] = DEMO
+        return out
 
 
 @app.get("/api/change")
@@ -388,6 +401,7 @@ def api_get_settings():
     out["electrum_effective"] = {"host": tgt[0], "port": tgt[1], "ssl": tgt[2], "pinned": bool(tgt[3]),
                                  "overridden": tgt[0] != host or tgt[1] != port} if tgt else None
     out["override_phrase"] = OVERRIDE_PHRASE
+    out["demo"] = DEMO
     try:
         out["strike_next_run"] = schedule.next_check(datetime.now(LDN), s["strike_frequency"], s["strike_job_time"],
                                                      s["strike_weekday"], s["strike_monthday"],
@@ -405,6 +419,9 @@ SETTABLE = set(db.DEFAULTS) - {"cold_wallets", "cold_balance_cache", "strike_bal
 @app.post("/api/settings")
 def api_set_settings(d: dict):
     upd = {k: v for k, v in d.items() if k in SETTABLE}
+    if DEMO:   # integrations are off: ignore keys / servers entirely
+        upd = {k: v for k, v in upd.items() if not k.startswith(("strike_", "electrum_"))}
+        d = {k: v for k, v in d.items() if k != "strike_api_key_clear"}
     if "strike_api_key" in upd:
         k = str(upd.pop("strike_api_key") or "").strip()
         if k and not k.startswith("••••"):
@@ -475,6 +492,8 @@ def _bad():
 def api_wallets():
     with db.conn() as c:
         s = db.get_settings(c)
+    if DEMO:
+        return demo.wallet_list(s)
     cache = {w["id"]: w for w in (s.get("cold_balance_cache") or {}).get("wallets", []) if "id" in w}
     return [dict(wallets.public_view(w), balance=cache.get(w["id"], {}).get("balance"),
                  scanned_at=cache.get(w["id"], {}).get("at") or (s.get("cold_balance_cache") or {}).get("at")
@@ -483,6 +502,8 @@ def api_wallets():
 
 @app.post("/api/cold/preview")
 def api_wallet_preview(w: WalletIn):
+    if DEMO:
+        raise HTTPException(403, DEMO_OFF)
     """First receive + change addresses for an UNSAVED xpub/descriptor. Returns name + fingerprints + type only."""
     try:
         info = wallets.detect(w.spec, w.script)
@@ -497,6 +518,8 @@ def api_wallet_preview(w: WalletIn):
 
 @app.post("/api/cold/wallets")
 def api_wallet_add(w: WalletIn):
+    if DEMO:
+        raise HTTPException(403, DEMO_OFF)
     with db.conn() as c:
         s = db.get_settings(c)
         ws = cold_wallets(s)
@@ -514,6 +537,8 @@ def api_wallet_add(w: WalletIn):
 
 @app.put("/api/cold/wallets/{wid}")
 def api_wallet_edit(wid: str, e: WalletEdit):
+    if DEMO:
+        raise HTTPException(403, DEMO_OFF)
     """Edit name / description / type label. Key material can't be changed or read: remove + re-add instead."""
     with db.conn() as c:
         s = db.get_settings(c)
@@ -549,6 +574,8 @@ def api_wallet_edit(wid: str, e: WalletEdit):
 
 @app.delete("/api/cold/wallets/{wid}")
 def api_wallet_del(wid: str):
+    if DEMO:
+        raise HTTPException(403, DEMO_OFF)
     with db.conn() as c:
         s = db.get_settings(c)
         ws = [x for x in cold_wallets(s) if x["id"] != wid]
@@ -558,6 +585,8 @@ def api_wallet_del(wid: str):
 
 @app.get("/api/cold/wallets/{wid}/addresses")
 def api_wallet_addresses(wid: str, n: int = 5):
+    if DEMO:
+        raise HTTPException(403, DEMO_OFF)
     with db.conn() as c:
         s = db.get_settings(c)
     for w in cold_wallets(s):
@@ -587,6 +616,8 @@ def api_strike_run():
 
 @app.post("/api/strike/test")
 def api_strike_test():
+    if DEMO:
+        raise HTTPException(403, DEMO_OFF)
     with db.conn() as c:
         key = strike_key(db.get_settings(c))
     if not key:
@@ -608,6 +639,8 @@ def api_prices():
 
 @app.post("/api/example/load")
 def api_example_load():
+    if DEMO:
+        raise HTTPException(403, DEMO_OFF)
     with db.conn() as c:
         return {"inserted": example.generate(c, {k: v[0] for k, v in prices.history(c).items()})}
 
@@ -624,6 +657,58 @@ def api_example_delete():
 def api_log():
     with db.conn() as c:
         return [dict(r) for r in c.execute("SELECT * FROM joblog ORDER BY id DESC LIMIT 50")]
+
+
+# ---------------- demo mode (Satoshi Demo app only) ----------------
+class DemoIn(BaseModel):
+    start: str
+    amount: float = 25
+    frequency: str = "weekly"
+    salary: float = 45000
+    lump_sum: float = 0
+    cold_every: str = "quarterly"
+    exchanges: int = 2
+
+
+def _need_demo():
+    if not DEMO:
+        raise HTTPException(404, "Not found")
+
+
+@app.get("/api/demo/status")
+def api_demo_status():
+    if not DEMO:
+        return {"demo": False}
+    with db.conn() as c:
+        s = db.get_settings(c)
+    return {"demo": True, "configured": bool(s.get("demo_configured")), "params": s.get("demo_params")}
+
+
+@app.post("/api/demo/setup")
+def api_demo_setup(p: DemoIn):
+    _need_demo()
+    try:
+        params = demo.validate(p.model_dump())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    with db.conn() as c:
+        demo.wipe(c)
+        if not db.get_settings(c).get("disable_external_prices"):
+            try:   # public BTC/GBP history only (Kraken / CoinGecko / Coinbase Exchange)
+                prices.refresh_history(c, params["start_date"] - timedelta(days=2))
+            except Exception:
+                pass
+        res = demo.generate(c, params, {k: v[0] for k, v in prices.history(c).items()})
+        db.log(c, "demo", f"generated {res['rows']} demo transactions")
+    return res
+
+
+@app.post("/api/demo/reset")
+def api_demo_reset():
+    _need_demo()
+    with db.conn() as c:
+        demo.wipe(c)
+    return {"ok": True}
 
 
 @app.get("/api/health")

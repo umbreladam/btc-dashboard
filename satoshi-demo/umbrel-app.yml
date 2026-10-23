@@ -1,0 +1,38 @@
+manifestVersion: 1
+id: satoshi-demo
+name: Satoshi Demo
+tagline: Demo of Satoshi BTC Dashboard with a made-up stack
+icon: https://raw.githubusercontent.com/umbreladam/umbrel-app-store/main/satoshi-demo/icon.svg
+category: bitcoin
+version: "1.0.14"
+port: 8766
+description: >-
+  A demo edition of Satoshi BTC Dashboard for meetups and presentations. A first-launch wizard asks when you
+  started stacking, your DCA amount and frequency, salary, starting lump sum, how often you move coins to
+  cold storage and how many exchanges you use, then generates a realistic but completely FAKE history:
+  buys on made-up exchanges at real historical BTC/GBP prices, fees, withdrawals to a made-up 2-of-3 multisig
+  and single-sig wallet, a couple of sales and a spend.
+
+
+  Every feature of the real app: dashboard, charts, value change, transactions, privacy mode, UK CGT and
+  after-tax value. Demo mode never connects to Strike, Electrum or any wallet. "Reset demo" wipes everything
+  and restarts the wizard.
+
+
+  Not tax advice.
+developer: umbreladam
+website: https://github.com/umbreladam/btc-dashboard
+submitter: umbreladam
+submission: https://github.com/umbreladam/umbrel-app-store
+repo: https://github.com/umbreladam/btc-dashboard
+support: https://github.com/umbreladam/btc-dashboard/issues
+gallery:
+  - https://raw.githubusercontent.com/umbreladam/umbrel-app-store/main/satoshi-demo/gallery/1.jpg
+  - https://raw.githubusercontent.com/umbreladam/umbrel-app-store/main/satoshi-demo/gallery/2.jpg
+  - https://raw.githubusercontent.com/umbreladam/umbrel-app-store/main/satoshi-demo/gallery/3.jpg
+releaseNotes: >-
+  First release: demo mode with setup wizard and reset.
+dependencies: []
+path: ""
+defaultUsername: ""
+defaultPassword: ""

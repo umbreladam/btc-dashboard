@@ -4,13 +4,19 @@ import sys, asyncio, io, os
 from PIL import Image, ImageDraw, ImageFont
 from playwright.async_api import async_playwright
 
-BASE = sys.argv[1] if len(sys.argv) > 1 else "http://localhost:8765"
-OUT = "satoshi-btc-dashboard/gallery"
+ARGS = [a for a in sys.argv[1:] if not a.startswith("--")]
+BASE = ARGS[0] if ARGS else "http://localhost:8765"
+DEMO = "--demo" in sys.argv   # Satoshi Demo app (run with DEMO_MODE=1, wizard already completed)
+OUT = "satoshi-demo/gallery" if DEMO else "satoshi-btc-dashboard/gallery"
 W, H, BAR = 1440, 900, 90
 SHOTS = [("dash", None, "Your whole Bitcoin stack at a glance"),
          ("dash", "#wallets-panel", "Every wallet: Strike, exchanges, multisig and single-sig cold storage"),
          ("dash", "#cgt-table", "Estimate what you keep after UK Capital Gains Tax"),
          ("settings", "#cold-wallets", "Import CSVs, auto-record Strike DCA, watch-only wallets via your Electrs")]
+if DEMO:
+    SHOTS = [("dash", None, "Demo: a made-up stack priced at real BTC/GBP history"),
+             ("dash", "#wallets-panel", "Fake exchanges, a 2-of-3 multisig vault and a single-sig wallet"),
+             ("dash", "#cgt-table", "Every feature of the real app, including UK CGT")]
 F = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
 

@@ -18,8 +18,24 @@
     <a href="#dash" class="active">Dashboard</a><a href="#tx">Transactions</a><a href="#import">Import</a><a href="#settings">Settings</a>
   </nav>
 </header>
+<div id="demo-banner" class="banner demo hidden">🎭 <b>DEMO MODE</b> · every transaction, exchange and wallet here is made up (prices are real). Strike, Electrum and wallet connections are switched off. <button type="button" id="btn-demo-reset" class="danger">Reset demo</button></div>
 <div id="example-banner" class="banner hidden">⚠ Showing <b>EXAMPLE DATA</b> (<span id="ex-count"></span> rows). Import your real exports, then delete example data in Settings.</div>
 <main>
+<section id="page-wizard" class="hidden">
+  <div class="panel wizard"><div class="ph"><h3>Welcome to Satoshi Demo: build a pretend stack</h3></div>
+    <p class="sub">Answer a few questions and the app generates a realistic, completely <b>fake</b> stacking history: recurring buys on made-up exchanges at <b>real historical BTC/GBP prices</b>, fees, withdrawals to two made-up cold wallets (a 2-of-3 multisig and a single-sig), a sale or two and a spend. Nothing connects to Strike, Electrum or any wallet.</p>
+    <form id="f-wizard" class="form">
+      <label>When did you start stacking?<input name="start" type="date" required min="2015-01-01"></label>
+      <label>DCA amount (£)<input name="amount" type="number" min="1" step="1" value="25" required></label>
+      <label>How often?<select name="frequency"><option value="daily">Daily</option><option value="weekly" selected>Weekly</option><option value="monthly">Monthly</option></select></label>
+      <label>Annual salary (£, for UK CGT bands)<input name="salary" type="number" min="0" step="1000" value="45000"></label>
+      <label>Starting lump sum (£, optional)<input name="lump_sum" type="number" min="0" step="100" value="0"></label>
+      <label>Move to cold storage<select name="cold_every"><option value="monthly">Monthly</option><option value="quarterly" selected>Quarterly</option><option value="6-monthly">Every 6 months</option><option value="yearly">Yearly</option><option value="never">Never (leave on exchanges)</option></select></label>
+      <label>Number of exchanges used<select name="exchanges"><option>1</option><option selected>2</option><option>3</option></select></label>
+      <div class="btns wide"><button class="primary" id="btn-wizard">Generate my demo stack</button><span class="sub" id="wizard-msg"></span></div>
+    </form></div>
+</section>
+
 <section id="page-dash">
   <div class="cards">
     <div class="card big"><div class="lbl">Total BTC held</div><div class="val" id="c-btc">—</div>
@@ -95,7 +111,7 @@
       <label>Exempt amount already used (£)<input name="exempt_used" class="pmask" type="number"></label>
       <label>Assumed selling fee (%)<input name="sell_fee_pct" type="number" step="0.01"></label>
     </div></div>
-    <div class="panel"><div class="ph"><h3>Strike DCA (optional, read-only API key)</h3></div><div class="form">
+    <div class="panel" id="strike-panel"><div class="ph"><h3>Strike DCA (optional, read-only API key)</h3></div><div class="form">
       <p class="sub wide">Optional. Don't use Strike? Set Frequency to <b>Off</b> and add your buys with <b>Import</b> (CSV) or <b>Transactions → Add</b>.</p>
       <details class="wide" open><summary><b>How to create a read-only Strike API key</b></summary><ol class="sub">
         <li>Sign in at <a href="https://dashboard.strike.me" target="_blank" rel="noopener">https://dashboard.strike.me</a>.</li>
@@ -118,7 +134,7 @@
       <p class="sub wide" id="strike-next"></p>
       <div class="btns wide"><button type="button" id="btn-strike-test">Test key</button><button type="button" id="btn-strike-run">Run job now</button></div>
     </div></div>
-    <div class="panel"><div class="ph"><h3>Cold storage (watch-only: xpub or multisig descriptor)</h3></div><div class="form">
+    <div class="panel" id="cold-panel"><div class="ph"><h3>Cold storage (watch-only: xpub or multisig descriptor)</h3></div><div class="form">
       <div class="wide" id="cold-wallets">No cold-storage wallets yet.</div>
       <h4 class="wide" style="margin:6px 0 0">Add a wallet</h4>
       <label>Name<input id="cw-label" autocomplete="off" maxlength="60" placeholder="e.g. Family vault"></label>

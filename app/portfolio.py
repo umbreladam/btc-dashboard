@@ -45,8 +45,11 @@ def tax_settings(s):
 def holdings(s, ledger):
     """(strike, cold, other, total) BTC: live Strike / cold-scan balances when cached, else the transaction ledger."""
     strike = s["strike_balance_cache"]["btc"] if s.get("strike_balance_cache") else ledger.get("strike", 0)
+    # demo mode: made-up cold wallets live in the ledger under their own keys (settings["demo_wallets"])
+    dcold = {k for k, m in (s.get("demo_wallets") or {}).items() if m.get("type") in ("Multisig", "Single-sig")}
     cold = s["cold_balance_cache"]["btc"] if s.get("cold_balance_cache") else ledger.get("cold", 0)
-    other = sum(v for k, v in ledger.items() if k not in ("strike", "cold"))
+    cold += sum(ledger.get(k, 0) for k in dcold)
+    other = sum(v for k, v in ledger.items() if k not in ("strike", "cold") and k not in dcold)
     return strike, cold, other, strike + cold + other
 
 
@@ -110,9 +113,12 @@ def wallet_rows(s, ledger, cold, strike_btc, total, pg, pu):
     """One row per wallet for the Wallets panel. Rows sum to holdings.total."""
     rows = []
     sc = s.get("strike_balance_cache") or {}
+    meta = s.get("demo_wallets") or {}
     rows.append({"id": "strike", "name": "Strike", "type": "Exchange", "description": "Strike account" +
                  (" (live API balance)" if sc else " (from transaction ledger)"), "btc": strike_btc,
                  "scanned_at": sc.get("at"), "source": "strike-api" if sc else "ledger"})
+    if meta and not ledger.get("strike"):   # demo: no Strike account
+        rows.pop()
     cache = s.get("cold_balance_cache")
     if cache:
         per = {w.get("id"): w for w in cache.get("wallets", [])}
@@ -121,7 +127,7 @@ def wallet_rows(s, ledger, cold, strike_btc, total, pg, pu):
             rows.append({"id": w["id"], "name": w["name"], "type": w["type"], "policy": w.get("policy"),
                          "description": w.get("description", ""), "btc": p.get("balance", 0.0),
                          "scanned_at": p.get("at") or cache.get("at"), "source": "electrs"})
-        known = sum(r["btc"] for r in rows[1:])
+        known = sum(r["btc"] for r in rows if r["id"] != "strike")
         if abs(cache["btc"] - known) > 1e-9:  # e.g. a wallet removed since the last scan
             rows.append({"id": "cold-other", "name": "Cold storage (unattributed)", "type": "Single-sig",
                          "description": "Last scan total not matched to a current wallet", "btc": round(cache["btc"] - known, 8),
@@ -135,8 +141,13 @@ def wallet_rows(s, ledger, cold, strike_btc, total, pg, pu):
             rows.append({"id": "cold", "name": "Cold storage (ledger)", "type": "Cold", "description":
                          "From transfers in your transaction history; scan a wallet for live balances",
                          "btc": ledger["cold"], "scanned_at": None, "source": "ledger"})
-    for k, v in sorted(ledger.items()):
+    for k, v in sorted(ledger.items(), key=lambda kv: (k_order(meta, kv[0]), kv[0])):
         if k in ("strike", "cold") or abs(v) < 1e-12:
+            continue
+        if k in meta:
+            m = meta[k]
+            rows.append({"id": "d-" + k, "name": m["name"], "type": m["type"], "policy": m.get("policy"),
+                         "description": m.get("description", ""), "btc": v, "scanned_at": None, "source": "demo"})
             continue
         rows.append({"id": "x-" + k, "name": EXCHANGE_NAMES.get(k, k.title()), "type": "Exchange" if k != "other" else "Other",
                      "description": "Derived from imported/manual transactions", "btc": v, "scanned_at": None,
@@ -146,6 +157,10 @@ def wallet_rows(s, ledger, cold, strike_btc, total, pg, pu):
         r["gbp"], r["usd"] = r["btc"] * pg, r["btc"] * pu
         r["pct"] = (r["btc"] / total * 100) if total else 0
     return rows
+
+
+def k_order(meta, k):
+    return {"Multisig": 0, "Single-sig": 1}.get((meta.get(k) or {}).get("type"), 2)
 
 
 MIN_FALLBACK_BUY_GBP = 1.0
